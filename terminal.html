@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>EngulfingTrendEA · Deep Analysis</title>
+<title>Engulfing · Pure Price Action</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 :root{--bg:#0a0b0f;--srf:#131620;--srf2:#1a1e2e;--silver:#cbd5e1;--silver-b:#e2e8f0;
@@ -34,7 +34,7 @@ cursor:pointer;white-space:nowrap}
 border-color:var(--silver-d)}
 .chip:active{transform:scale(.95)}
 .div{width:1px;background:var(--brd2);margin:0 3px;flex-shrink:0}
-#chart{height:36vh;background:var(--bg);position:relative}
+#chart{height:38vh;background:var(--bg);position:relative}
 .loading{position:absolute;inset:0;display:flex;justify-content:center;align-items:center;
 background:rgba(10,11,15,.9);z-index:5;font-size:12px;color:var(--mut)}
 .loading.hide{display:none}
@@ -73,9 +73,6 @@ display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:10px}
 border-radius:5px;color:var(--silver-b);font-size:10px;font-family:monospace;text-align:center;font-weight:600}
 .settings input:focus{outline:0;border-color:var(--silver-d)}
 .info{padding:12px;background:var(--srf);padding-bottom:30px}
-.legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;font-size:10px;color:var(--mut)}
-.legend span{display:flex;align-items:center;gap:4px}
-.dot{width:8px;height:8px;border-radius:2px}
 .log-title{font-size:10px;color:var(--mut);margin-bottom:6px;text-transform:uppercase;
 letter-spacing:.5px;font-weight:600;display:flex;justify-content:space-between}
 .log-title .count{color:var(--silver-d);font-family:monospace}
@@ -83,7 +80,7 @@ letter-spacing:.5px;font-weight:600;display:flex;justify-content:space-between}
 background:var(--srf2);border:1px solid var(--brd);border-radius:10px}
 .log::-webkit-scrollbar{width:3px}
 .log::-webkit-scrollbar-thumb{background:var(--silver-d);border-radius:2px}
-.log-row{display:grid;grid-template-columns:56px 38px 1fr 62px;gap:6px;
+.log-row{display:grid;grid-template-columns:56px 42px 1fr 62px;gap:6px;
 padding:7px 9px;font-size:10px;border-bottom:1px solid var(--brd);align-items:center}
 .log-row:last-child{border-bottom:0}
 .log-row .t{color:var(--mut);font-family:monospace;font-size:9px}
@@ -98,7 +95,6 @@ display:flex;flex-direction:column;gap:1px;overflow:hidden}
 display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-size:10px}
 .log-row .r.win{color:#6ee7b7}
 .log-row .r.loss{color:#fca5a5}
-.log-row .r.open{color:var(--silver-d)}
 .log-row .r .pips{font-size:8px;opacity:.7}
 .empty{padding:20px;text-align:center;color:var(--mut);font-size:11px}
 .btn{width:100%;padding:11px;background:linear-gradient(135deg,#334155,#1e293b);
@@ -110,7 +106,7 @@ font-size:12px;font-weight:600;cursor:pointer;margin-top:10px}
 <body>
 
 <div class="hdr">
-  <h1>🎯 EngulfingTrendEA · Deep</h1>
+  <h1>🎯 Engulfing · Price Action</h1>
   <div class="status" id="status">Ulanmoqda...</div>
 </div>
 
@@ -155,48 +151,42 @@ font-size:12px;font-weight:600;cursor:pointer;margin-top:10px}
     <div class="pnl-sm"><div class="lbl">🟢 Buy P&L</div><div class="val" id="buyPnl">0</div></div>
     <div class="pnl-sm"><div class="lbl">🔴 Sell P&L</div><div class="val" id="sellPnl">0</div></div>
     <div class="pnl-sm"><div class="lbl">📉 MaxDD</div><div class="val neg" id="maxDD">0</div></div>
-    <div class="pnl-sm"><div class="lbl">⏳ Open</div><div class="val" id="openCount">0</div></div>
+    <div class="pnl-sm"><div class="lbl">📊 Signals</div><div class="val" id="signalCount">0</div></div>
   </div>
 </div>
 
 <div class="settings">
   <div class="item"><span>Risk%:</span><input type="number" id="riskPct" value="2" step="0.5" min="0.1"></div>
   <div class="item"><span>Balans:</span><input type="number" id="balance" value="1000" step="100"></div>
-  <div class="item"><span>SLbuf:</span><input type="number" id="slBuffer" value="20" step="5"></div>
-  <div class="item"><span>ATR×:</span><input type="number" id="atrMult" value="1.5" step="0.1"></div>
+  <div class="item"><span>SLbuf:</span><input type="number" id="slBuffer" value="10" step="5"></div>
+  <div class="item"><span>Swing:</span><input type="number" id="swingLookback" value="10" step="1"></div>
+  <div class="item"><span>W/M:</span><input type="number" id="wmTolerance" value="0.3" step="0.1"></div>
 </div>
 
 <div class="info">
-  <div class="legend">
-    <span><div class="dot" style="background:#60a5fa"></div>EMA 50</span>
-    <span><div class="dot" style="background:#ef4444"></div>EMA 200</span>
-    <span><div class="dot" style="background:#10b981"></div>WIN</span>
-    <span><div class="dot" style="background:#fca5a5"></div>LOSS</span>
-  </div>
-  <div class="log-title"><span>📋 Savdolar · 1 sham 2 shamni buzsа</span><span class="count" id="logCount">0</span></div>
+  <div class="log-title"><span>📋 Savdolar · 1 sham 2 shamni buzsa</span><span class="count" id="logCount">0</span></div>
   <div class="log" id="log"><div class="empty">Signallar kutilmoqda...</div></div>
   <button class="btn" onclick="loadData()">🔄 Qayta hisoblash</button>
 </div>
 
 <script>
 // ============================================================
-// KONFIGURATSIYA
+// KONFIGURATSIYA — INDIKATORSIZ
 // ============================================================
 const CFG = {
   symbol: 'BTCUSDT', interval: '15m', limit: 1000,
-  emaFast: 50, emaSlow: 200, atrPeriod: 14,
-  atrMult: 1.5, strongTrendRatio: 2.0,
   postLossRisk: 0.5, postWinRisk: 1.2,
-  absMaxRisk: 4.0, ladderMaxR: 5.0,
+  absMaxRisk: 4.0,
   maxConsecLosses: 10, pauseHours: 6
 };
 
 function getRisk(){ return parseFloat(document.getElementById('riskPct').value)||2; }
 function getBalance(){ return parseFloat(document.getElementById('balance').value)||1000; }
-function getSLBuf(){ return parseFloat(document.getElementById('slBuffer').value)||20; }
-function getATRMult(){ return parseFloat(document.getElementById('atrMult').value)||1.5; }
+function getSLBuf(){ return parseFloat(document.getElementById('slBuffer').value)||10; }
+function getSwingLookback(){ return parseInt(document.getElementById('swingLookback').value)||10; }
+function getWMTolerance(){ return parseFloat(document.getElementById('wmTolerance').value)||0.3; }
 
-let chart, candleSeries, ema50S, ema200S;
+let chart, candleSeries;
 
 // ============================================================
 // CHART
@@ -218,8 +208,6 @@ function initChart(){
     borderUpColor:'#10b981', borderDownColor:'#ef4444',
     wickUpColor:'#10b981', wickDownColor:'#ef4444'
   });
-  ema50S = chart.addLineSeries({color:'#60a5fa',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
-  ema200S = chart.addLineSeries({color:'#ef4444',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
   window.addEventListener('resize', ()=>chart.applyOptions({width:el.clientWidth,height:el.clientHeight}));
 }
 
@@ -247,15 +235,9 @@ async function loadData(){
 
     candleSeries.setData(candles);
 
-    const ema50 = calcEMA(candles, CFG.emaFast);
-    const ema200 = calcEMA(candles, CFG.emaSlow);
-    ema50S.setData(ema50.filter(d=>d.value!=null));
-    ema200S.setData(ema200.filter(d=>d.value!=null));
+    const result = findTrades(candles);
 
-    const atr = calcATR(candles, CFG.atrPeriod);
-    const trades = findTrades(candles, ema50, ema200, atr);
-
-    const markers = trades.map(t=>({
+    const markers = result.trades.map(t=>({
       time: t.time,
       position: t.type==='BUY'?'belowBar':'aboveBar',
       color: t.result==='WIN'?'#10b981':(t.result==='LOSS'?'#fca5a5':'#94a3b8'),
@@ -264,12 +246,13 @@ async function loadData(){
     }));
     candleSeries.setMarkers(markers);
 
-    calculateStats(trades);
-    renderLog(trades);
+    calculateStats(result.trades);
+    document.getElementById('signalCount').innerText = result.signals;
+    renderLog(result.trades);
     chart.timeScale().fitContent();
 
     loading.classList.add('hide');
-    status.innerText = 'Online · '+CFG.symbol+' '+CFG.interval+' · '+trades.length+' signal';
+    status.innerText = 'Online · '+CFG.symbol+' '+CFG.interval+' · '+result.signals+' signal';
     status.className = 'status';
   }catch(e){
     loading.innerHTML = '<div style="color:#fca5a5;text-align:center;padding:20px">⚠️ '+e.message+'</div>';
@@ -279,74 +262,116 @@ async function loadData(){
 }
 
 // ============================================================
-// EMA / ATR
+// SWING HIGH/LOW
 // ============================================================
-function calcEMA(data, period){
-  const k = 2/(period+1);
-  const r = []; let ema = data[0].close;
-  for(let i=0;i<data.length;i++){
-    ema = i===0 ? data[i].close : data[i].close*k+ema*(1-k);
-    r.push({time:data[i].time, value: i<period-1?null:ema});
+function findSwingHigh(candles, from, to){
+  let max = -Infinity, idx = -1;
+  for(let i = from; i <= to; i++){
+    if(candles[i].high > max){ max = candles[i].high; idx = i; }
   }
-  return r;
+  return { value: max, index: idx };
 }
 
-function calcATR(data, period){
-  const tr = [];
-  for(let i=0;i<data.length;i++){
-    if(i===0){ tr.push(data[i].high-data[i].low); continue; }
-    const h=data[i].high, l=data[i].low, pc=data[i-1].close;
-    tr.push(Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc)));
+function findSwingLow(candles, from, to){
+  let min = Infinity, idx = -1;
+  for(let i = from; i <= to; i++){
+    if(candles[i].low < min){ min = candles[i].low; idx = i; }
   }
-  const atr = [];
-  for(let i=0;i<data.length;i++){
-    if(i<period-1){ atr.push({time:data[i].time,value:null}); continue; }
-    if(i===period-1){
-      let s=0; for(let j=0;j<period;j++) s+=tr[j];
-      atr.push({time:data[i].time, value:s/period});
-    } else {
-      atr.push({time:data[i].time, value:(atr[i-1].value*(period-1)+tr[i])/period});
-    }
+  return { value: min, index: idx };
+}
+
+// ============================================================
+// TREND — SWING orqali (EMA YO'Q!)
+// ============================================================
+function detectTrend(candles, idx){
+  const lookback = getSwingLookback();
+  if(idx < lookback * 2) return 0;
+
+  // Oxirgi 2 ta swing High va Low ni topish
+  const mid = idx - lookback;
+  const lastHigh = findSwingHigh(candles, mid, idx);
+  const prevHigh = findSwingHigh(candles, idx - lookback * 2, mid - 1);
+  const lastLow  = findSwingLow(candles, mid, idx);
+  const prevLow  = findSwingLow(candles, idx - lookback * 2, mid - 1);
+
+  if(lastHigh.value === -Infinity || prevHigh.value === -Infinity) return 0;
+  if(lastLow.value === Infinity || prevLow.value === Infinity) return 0;
+
+  // UP trend: HH + HL
+  if(lastHigh.value > prevHigh.value && lastLow.value > prevLow.value){
+    return 1;
   }
-  return atr;
-}
-
-// ============================================================
-// DEEP ANALYSIS — HAR SHAM TEKSHIRILADI
-// ============================================================
-// BUY: 1 YASHIL sham 2 shamning HIGH ini buzsa
-function isBullSignal(p2, p1, cur){
-  if(cur.close <= cur.open) return false;    // yashil
-  const maxHigh = Math.max(p1.high, p2.high);
-  return cur.close > maxHigh;                 // HIGH ni buzdi
-}
-
-// SELL: 1 QIZIL sham 2 shamning LOW ini buzsa
-function isBearSignal(p2, p1, cur){
-  if(cur.close >= cur.open) return false;    // qizil
-  const minLow = Math.min(p1.low, p2.low);
-  return cur.close < minLow;                  // LOW ni buzdi
-}
-
-// ============================================================
-// TREND — oddiy
-// ============================================================
-function getTrend(ema50, ema200, idx){
-  const f = ema50[idx].value, s = ema200[idx].value;
-  if(f == null || s == null) return 0;
-  if(f > s) return 1;
-  if(f < s) return -1;
+  // DOWN trend: LH + LL
+  if(lastHigh.value < prevHigh.value && lastLow.value < prevLow.value){
+    return -1;
+  }
   return 0;
+}
+
+// ============================================================
+// W / M PATTERN
+// ============================================================
+function isWPattern(candles, idx){
+  const lookback = getSwingLookback();
+  if(idx < lookback * 2) return false;
+
+  const low1 = findSwingLow(candles, idx - lookback * 2, idx - lookback);
+  const low2 = findSwingLow(candles, idx - lookback, idx);
+
+  if(low1.value === Infinity || low2.value === Infinity) return false;
+
+  const diff = Math.abs(low1.value - low2.value);
+  const avg = (low1.value + low2.value) / 2;
+  const tol = avg * getWMTolerance() * 0.01;  // 0.3% tolerance
+
+  // Orasida pastroq nuqta bo'lmasligi kerak
+  const mid = findSwingLow(candles, low1.index, low2.index);
+  if(mid.value < Math.min(low1.value, low2.value) * 0.999) return false;
+
+  return diff < tol;
+}
+
+function isMPattern(candles, idx){
+  const lookback = getSwingLookback();
+  if(idx < lookback * 2) return false;
+
+  const high1 = findSwingHigh(candles, idx - lookback * 2, idx - lookback);
+  const high2 = findSwingHigh(candles, idx - lookback, idx);
+
+  if(high1.value === -Infinity || high2.value === -Infinity) return false;
+
+  const diff = Math.abs(high1.value - high2.value);
+  const avg = (high1.value + high2.value) / 2;
+  const tol = avg * getWMTolerance() * 0.01;
+
+  const mid = findSwingHigh(candles, high1.index, high2.index);
+  if(mid.value > Math.max(high1.value, high2.value) * 1.001) return false;
+
+  return diff < tol;
+}
+
+// ============================================================
+// SIGNAL — 1 sham 2 shamning HIGH/LOW ini buzsa
+// ============================================================
+function isBullSignal(p2, p1, cur){
+  if(cur.close <= cur.open) return false;           // yashil
+  const maxHigh = Math.max(p1.high, p2.high);
+  return cur.close > maxHigh;                        // 2 shamning HIGH ini buzdi
+}
+
+function isBearSignal(p2, p1, cur){
+  if(cur.close >= cur.open) return false;           // qizil
+  const minLow = Math.min(p1.low, p2.low);
+  return cur.close < minLow;                         // 2 shamning LOW ini buzdi
 }
 
 // ============================================================
 // ASOSIY LOGIKA
 // ============================================================
-function findTrades(candles, ema50, ema200, atr){
+function findTrades(candles){
   const trades = [];
   const startBalance = getBalance();
   const slBuf = getSLBuf();
-  const atrMult = getATRMult();
   const pipSize = getPipSize(CFG.symbol);
 
   let balance = startBalance;
@@ -355,12 +380,14 @@ function findTrades(candles, ema50, ema200, atr){
   let lastResult = -1;
   let consecLosses = 0;
   let pauseUntil = 0;
-  let signalCount = 0;
+  let signals = 0;
 
-  for(let i = 3; i < candles.length; i++){
+  const lookback = getSwingLookback();
+
+  for(let i = lookback * 2 + 3; i < candles.length; i++){
     const now = candles[i].time;
 
-    // === 1. Pozitsiyani yopish tekshiruvi ===
+    // === Yopish ===
     if(inPos && cur){
       const c = candles[i];
       let closed = false, exitP = 0, result = null;
@@ -400,52 +427,50 @@ function findTrades(candles, ema50, ema200, atr){
       }
     }
 
-    // === 2. Pauza / ochiq pozitsiya ===
     if(now < pauseUntil) continue;
     if(inPos) continue;
 
-    // === 3. HAR SHAM TEKSHIRILADI ===
+    // === Signal ===
     const idx = i - 1;
-    const cl = candles[idx];        // signal sham
-    const p1 = candles[idx - 1];    // oldingi 1
-    const p2 = candles[idx - 2];    // oldingi 2
+    const cl = candles[idx];
+    const p1 = candles[idx - 1];
+    const p2 = candles[idx - 2];
     if(!cl || !p1 || !p2) continue;
 
-    // Trend
-    const trend = getTrend(ema50, ema200, idx);
+    // TREND (swing orqali)
+    const trend = detectTrend(candles, idx);
     if(trend === 0) continue;
 
-    // ATR
-    const atrVal = atr[idx].value;
-    if(!atrVal || atrVal <= 0) continue;
+    // W/M pattern
+    const wPattern = isWPattern(candles, idx);
+    const mPattern = isMPattern(candles, idx);
 
-    const range = cl.high - cl.low;
-
-    // RR
-    let rr = 2;
-    if(range > atrVal * atrMult) rr = 3;
-
-    // Kuchli trend
-    const f = ema50[idx].value, s = ema200[idx].value;
-    let strongTrend = false;
-    if(f != null && s != null){
-      strongTrend = Math.abs(f - s) / atrVal >= CFG.strongTrendRatio;
-    }
-    const effectiveRR = strongTrend ? CFG.ladderMaxR : rr;
-
-    // === SIGNAL TEKSHIRUVI ===
+    // SIGNAL
     let sigType = null;
+    let pattern = null;
 
     if(trend === 1 && isBullSignal(p2, p1, cl)){
       sigType = 'BUY';
+      if(wPattern) pattern = 'W';
     } else if(trend === -1 && isBearSignal(p2, p1, cl)){
       sigType = 'SELL';
+      if(mPattern) pattern = 'M';
     }
 
     if(!sigType) continue;
-    signalCount++;
+    signals++;
 
-    // === SL: 2 shamning eng past/yuqori nuqtasi ===
+    // === DYNAMIC RR ===
+    // Katta sham (range > 2 * o'rtacha) → RR 3
+    // Pattern bo'lsa → RR 5
+    // Boshqa → RR 2
+    const avgRange = avgRangeAt(candles, idx, 20);
+    const curRange = cl.high - cl.low;
+    let rr = 2;
+    if(pattern) rr = 5;
+    else if(curRange > avgRange * 1.5) rr = 3;
+
+    // === SL: 2 shamning ekstremumi ===
     let slPrice, slDist;
     if(sigType === 'BUY'){
       slPrice = Math.min(p1.low, p2.low) - slBuf * pipSize;
@@ -458,8 +483,8 @@ function findTrades(candles, ema50, ema200, atr){
 
     // === TP ===
     let tpPrice;
-    if(sigType === 'BUY') tpPrice = cl.close + slDist * effectiveRR;
-    else tpPrice = cl.close - slDist * effectiveRR;
+    if(sigType === 'BUY') tpPrice = cl.close + slDist * rr;
+    else tpPrice = cl.close - slDist * rr;
 
     // === RISK ===
     let riskPct = getRisk();
@@ -471,9 +496,10 @@ function findTrades(candles, ema50, ema200, atr){
 
     cur = {
       time: cl.time, type: sigType, entry: cl.close,
-      sl: slPrice, tp: tpPrice, rr: effectiveRR,
+      sl: slPrice, tp: tpPrice, rr: rr,
       slDist, riskMoney, riskPct,
-      strongTrend, balanceBefore: balance
+      pattern: pattern,
+      balanceBefore: balance
     };
     inPos = true;
   }
@@ -491,7 +517,7 @@ function findTrades(candles, ema50, ema200, atr){
     }
 
     cur.pnl = cur.riskMoney * pnlPerUnit;
-    cur.pips = Math.abs(pnlPerUnit * cur.slDist / getPipSize(CFG.symbol));
+    cur.pips = Math.abs(pnlPerUnit * cur.slDist / pipSize);
     cur.exitPrice = exitP;
     cur.exitTime = lastCandle.time;
     cur.result = cur.pnl >= 0 ? 'WIN' : 'LOSS';
@@ -500,8 +526,19 @@ function findTrades(candles, ema50, ema200, atr){
     trades.push(cur);
   }
 
-  console.log('📊 Jami signallar:', signalCount, '| Yopilgan savdolar:', trades.length);
-  return trades;
+  return { trades, signals };
+}
+
+// ============================================================
+// AVG RANGE
+// ============================================================
+function avgRangeAt(candles, idx, period){
+  let sum = 0, count = 0;
+  for(let i = Math.max(0, idx - period); i < idx; i++){
+    sum += candles[i].high - candles[i].low;
+    count++;
+  }
+  return count > 0 ? sum / count : 0;
 }
 
 // ============================================================
@@ -520,7 +557,7 @@ function getPipSize(sym){
 // STATISTIKA
 // ============================================================
 function calculateStats(trades){
-  let totalPnl = 0, wins = 0, losses = 0, opens = 0;
+  let totalPnl = 0, wins = 0, losses = 0;
   let buyPnl = 0, sellPnl = 0, grossWin = 0, grossLoss = 0;
   let equity = getBalance(), peak = equity, maxDD = 0;
 
@@ -535,7 +572,7 @@ function calculateStats(trades){
       if(t.type === 'BUY') buyPnl += t.pnl; else sellPnl += t.pnl;
       equity += t.pnl; peak = Math.max(peak, equity);
       maxDD = Math.min(maxDD, equity - peak);
-    } else opens++;
+    }
   });
 
   const closed = wins + losses;
@@ -556,7 +593,6 @@ function calculateStats(trades){
   document.getElementById('winCount').innerText = wins;
   document.getElementById('lossCount').innerText = losses;
   document.getElementById('totalTrades').innerText = closed;
-  document.getElementById('openCount').innerText = opens;
 
   const bp = document.getElementById('buyPnl');
   bp.innerText = (buyPnl >= 0 ? '+' : '') + buyPnl.toFixed(1);
@@ -592,13 +628,13 @@ function renderLog(trades){
       String(d.getMinutes()).padStart(2,'0');
     const fmt = v => v<1 ? v.toFixed(4) : v<100 ? v.toFixed(2) : v.toFixed(0);
 
-    let rClass = 'open', rText = '⏳', pipsText = '';
+    let rClass = '', rText = '', pipsText = '';
     if(t.result === 'WIN'){ rClass='win'; rText='+'+t.pnl.toFixed(1)+'$'; pipsText='+'+t.pips.toFixed(0)+'p'; }
     if(t.result === 'LOSS'){ rClass='loss'; rText=t.pnl.toFixed(1)+'$'; pipsText='-'+t.pips.toFixed(0)+'p'; }
 
     const meta = 'RR 1:'+t.rr+' · risk '+t.riskMoney.toFixed(1)+'$' +
-      (t.strongTrend ? ' · STRONG' : '') +
-      (t.manualClose ? ' · YOPILDI' : '');
+      (t.pattern ? ' · '+t.pattern : '') +
+      (t.manualClose ? ' · CLOSE' : '');
 
     return '<div class="log-row">' +
       '<span class="t">'+ts+'</span>' +
@@ -637,7 +673,7 @@ function setTF(el, tf){
 window.addEventListener('DOMContentLoaded', ()=>{
   initChart();
   loadData();
-  ['riskPct','balance','slBuffer','atrMult'].forEach(id=>{
+  ['riskPct','balance','slBuffer','swingLookback','wmTolerance'].forEach(id=>{
     document.getElementById(id).addEventListener('change', loadData);
   });
 });
