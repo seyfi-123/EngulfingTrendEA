@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>EA Terminal — Engulfing</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root{
+  --bg:#0a0b0f;--srf:#131620;--srf2:#1a1e2e;
+  --silver:#cbd5e1;--silver-b:#e2e8f0;--silver-d:#94a3b8;
+  --txt:#e2e8f0;--mut:#94a3b8;
+  --green:#10b981;--red:#ef4444;--orange:#f59e0b;
+  --brd:rgba(255,255,255,.08);--brd2:rgba(255,255,255,.12);
+}
+*{margin:0;padding:0;box-sizing:border-box;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--txt);overflow-x:hidden;font-weight:400}
+
+.hdr{padding:12px 16px;background:rgba(10,11,15,.95);backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--brd);display:flex;justify-content:space-between;
+  align-items:center;position:sticky;top:0;z-index:10}
+.hdr h1{font-size:14px;font-weight:600;color:var(--silver-b)}
+.hdr .status{font-size:10px;padding:4px 10px;border-radius:12px;font-weight:600;
+  background:rgba(16,185,129,.12);color:#6ee7b7;border:1px solid rgba(16,185,129,.2);
+  display:flex;align-items:center;gap:5px}
+.hdr .status::before{content:'';width:5px;height:5px;border-radius:50%;
+  background:currentColor;animation:pulse 1.8s ease infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.controls{padding:10px 12px;background:var(--srf);border-bottom:1px solid var(--brd);
+  display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.controls::-webkit-scrollbar{display:none}
+.chip{padding:7px 12px;background:var(--srf2);border:1px solid var(--brd2);
+  border-radius:8px;font-size:11px;font-weight:500;color:var(--silver-d);
+  cursor:pointer;white-space:nowrap;transition:all .15s}
+.chip.active{background:linear-gradient(135deg,#334155,#1e293b);color:var(--silver-b);
+  border-color:var(--silver-d)}
+.chip:active{transform:scale(.95)}
+
+#chart{height:55vh;background:var(--bg);position:relative}
+.loading{position:absolute;inset:0;display:flex;justify-content:center;align-items:center;
+  background:rgba(10,11,15,.9);z-index:5;font-size:12px;color:var(--mut)}
+.loading.hide{display:none}
+.spinner{width:30px;height:30px;border:2px solid rgba(203,213,225,.2);
+  border-top-color:var(--silver);border-radius:50%;animation:spin 1s linear infinite;
+  margin-right:10px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.info{padding:12px;background:var(--srf);border-top:1px solid var(--brd)}
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:10px;color:var(--mut)}
+.legend span{display:flex;align-items:center;gap:4px}
+.dot{width:8px;height:8px;border-radius:2px}
+
+.stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px}
+.stat{background:var(--srf2);border:1px solid var(--brd);border-radius:10px;
+  padding:10px 8px;text-align:center}
+.stat .lbl{font-size:9px;color:var(--mut);text-transform:uppercase;
+  letter-spacing:.5px;margin-bottom:4px;font-weight:500}
+.stat .val{font-size:18px;font-weight:600;color:var(--silver-b);
+  font-variant-numeric:tabular-nums}
+.stat.buy .val{color:#6ee7b7}
+.stat.sell .val{color:#fca5a5}
+
+.log{max-height:180px;overflow-y:auto;scrollbar-width:thin;
+  background:var(--srf2);border:1px solid var(--brd);border-radius:10px}
+.log::-webkit-scrollbar{width:3px}
+.log::-webkit-scrollbar-thumb{background:var(--silver-d);border-radius:2px}
+.log-row{display:grid;grid-template-columns:60px 1fr 50px;gap:8px;
+  padding:8px 10px;font-size:10px;border-bottom:1px solid var(--brd);align-items:center}
+.log-row:last-child{border-bottom:0}
+.log-row .t{color:var(--mut);font-family:monospace}
+.log-row .s{font-weight:600;padding:2px 6px;border-radius:5px;text-align:center;
+  font-size:9px;letter-spacing:.3px}
+.log-row .s.buy{background:rgba(16,185,129,.15);color:#6ee7b7}
+.log-row .s.sell{background:rgba(239,68,68,.15);color:#fca5a5}
+.log-row .p{color:var(--silver);font-family:monospace;text-align:right}
+
+.empty{padding:20px;text-align:center;color:var(--mut);font-size:11px}
+
+.btn{width:100%;padding:12px;background:linear-gradient(135deg,#334155,#1e293b);
+  color:var(--silver-b);border:1px solid var(--brd2);border-radius:10px;
+  font-size:12px;font-weight:600;cursor:pointer;margin-top:10px;
+  letter-spacing:.3px}
+.btn:active{transform:scale(.98)}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <h1>🎯 EA Terminal</h1>
+  <div class="status" id="status">Ulanmoqda...</div>
+</div>
+
+<div class="controls">
+  <div class="chip active" data-sym="BTCUSDT" onclick="setSym(this,'BTCUSDT')">BTC/USDT</div>
+  <div class="chip" data-sym="ETHUSDT" onclick="setSym(this,'ETHUSDT')">ETH/USDT</div>
+  <div class="chip" data-sym="BNBUSDT" onclick="setSym(this,'BNBUSDT')">BNB/USDT</div>
+  <div class="chip" data-sym="SOLUSDT" onclick="setSym(this,'SOLUSDT')">SOL/USDT</div>
+  <div style="width:1px;background:var(--brd2);margin:0 4px"></div>
+  <div class="chip" data-tf="5m" onclick="setTF(this,'5m')">M5</div>
+  <div class="chip active" data-tf="15m" onclick="setTF(this,'15m')">M15</div>
+  <div class="chip" data-tf="1h" onclick="setTF(this,'1h')">H1</div>
+  <div class="chip" data-tf="4h" onclick="setTF(this,'4h')">H4</div>
+</div>
+
+<div id="chart">
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <span>Ma'lumot yuklanmoqda...</span>
+  </div>
+</div>
+
+<div class="info">
+  <div class="legend">
+    <span><div class="dot" style="background:#60a5fa"></div>EMA 50</span>
+    <span><div class="dot" style="background:#ef4444"></div>EMA 200</span>
+    <span><div class="dot" style="background:#10b981"></div>BUY signal</span>
+    <span><div class="dot" style="background:#ef4444"></div>SELL signal</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat buy">
+      <div class="lbl">BUY</div>
+      <div class="val" id="buyCount">0</div>
+    </div>
+    <div class="stat sell">
+      <div class="lbl">SELL</div>
+      <div class="val" id="sellCount">0</div>
+    </div>
+    <div class="stat">
+      <div class="lbl">Jami</div>
+      <div class="val" id="totalCount">0</div>
+    </div>
+  </div>
+
+  <div style="font-size:10px;color:var(--mut);margin-bottom:6px;
+              text-transform:uppercase;letter-spacing:.5px;font-weight:600">
+    📋 Signal jurnali
+  </div>
+  <div class="log" id="log">
+    <div class="empty">Signal kutilmoqda...</div>
+  </div>
+
+  <button class="btn" onclick="loadData()">🔄 Yangilash</button>
+</div>
+
+<script>
+// ============================================================
+// KONFIGURATSIYA
+// ============================================================
+const CFG = {
+  symbol: 'BTCUSDT',
+  interval: '15m',
+  limit: 500,
+  emaFast: 50,
+  emaSlow: 200
+};
+
+let chart, candleSeries, ema50Series, ema200Series;
+let allCandles = [];
+
+// ============================================================
+// CHART YARATISH
+// ============================================================
+function initChart() {
+  const el = document.getElementById('chart');
+  chart = LightweightCharts.createChart(el, {
+    width: el.clientWidth,
+    height: el.clientHeight,
+    layout: {
+      background: { color: '#0a0b0f' },
+      textColor: '#cbd5e1',
+      fontSize: 10,
+    },
+    grid: {
+      vertLines: { color: 'rgba(255,255,255,0.04)' },
+      horzLines: { color: 'rgba(255,255,255,0.04)' },
+    },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+      vertLine: { color: '#cbd5e1', width: 1, style: 2, labelBackgroundColor: '#334155' },
+      horzLine: { color: '#cbd5e1', width: 1, style: 2, labelBackgroundColor: '#334155' },
+    },
+    rightPriceScale: {
+      borderColor: 'rgba(255,255,255,0.08)',
+      scaleMargins: { top: 0.1, bottom: 0.1 },
+    },
+    timeScale: {
+      borderColor: 'rgba(255,255,255,0.08)',
+      timeVisible: true,
+      secondsVisible: false,
+    },
+  });
+
+  candleSeries = chart.addCandlestickSeries({
+    upColor: '#10b981',
+    downColor: '#ef4444',
+    borderUpColor: '#10b981',
+    borderDownColor: '#ef4444',
+    wickUpColor: '#10b981',
+    wickDownColor: '#ef4444',
+  });
+
+  ema50Series = chart.addLineSeries({
+    color: '#60a5fa',
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+
+  ema200Series = chart.addLineSeries({
+    color: '#ef4444',
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+
+  window.addEventListener('resize', () => {
+    chart.applyOptions({
+      width: el.clientWidth,
+      height: el.clientHeight,
+    });
+  });
+}
+
+// ============================================================
+// MA'LUMOT OLISH (Binance API)
+// ============================================================
+async function loadData() {
+  const loading = document.getElementById('loading');
+  const status = document.getElementById('status');
+  loading.classList.remove('hide');
+  status.innerText = 'Yuklanmoqda...';
+
+  try {
+    const url = `https://api.binance.com/api/v3/klines?symbol=${CFG.symbol}&interval=${CFG.interval}&limit=${CFG.limit}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const raw = await res.json();
+
+    allCandles = raw.map(d => ({
+      time: Math.floor(d[0] / 1000),
+      open: parseFloat(d[1]),
+      high: parseFloat(d[2]),
+      low: parseFloat(d[3]),
+      close: parseFloat(d[4]),
+    }));
+
+    candleSeries.setData(allCandles);
+
+    // EMA
+    const ema50 = calcEMA(allCandles, CFG.emaFast);
+    const ema200 = calcEMA(allCandles, CFG.emaSlow);
+    ema50Series.setData(ema50.filter(d => d.value != null));
+    ema200Series.setData(ema200.filter(d => d.value != null));
+
+    // Signal qidirish
+    const signals = findSignals(allCandles, ema50, ema200);
+
+    // Markerlar
+    const markers = signals.map(s => ({
+      time: s.time,
+      position: s.type === 'BUY' ? 'belowBar' : 'aboveBar',
+      color: s.type === 'BUY' ? '#10b981' : '#ef4444',
+      shape: s.type === 'BUY' ? 'arrowUp' : 'arrowDown',
+      text: s.type,
+    }));
+    candleSeries.setMarkers(markers);
+
+    // Statistika
+    const buys = signals.filter(s => s.type === 'BUY').length;
+    const sells = signals.filter(s => s.type === 'SELL').length;
+    document.getElementById('buyCount').innerText = buys;
+    document.getElementById('sellCount').innerText = sells;
+    document.getElementById('totalCount').innerText = signals.length;
+
+    // Log
+    renderLog(signals);
+
+    // Auto-scroll oxiriga
+    chart.timeScale().fitContent();
+
+    loading.classList.add('hide');
+    status.innerText = 'Online';
+    status.style.color = '#6ee7b7';
+  } catch (e) {
+    loading.innerHTML = `<div style="color:#fca5a5;text-align:center;padding:20px">
+      ⚠️ Xato: ${e.message}<br>
+      <div style="font-size:11px;color:#94a3b8;margin-top:8px">Boshqa symbol sinab ko'ring</div>
+    </div>`;
+    status.innerText = 'Offline';
+    status.style.color = '#fca5a5';
+    status.style.background = 'rgba(239,68,68,.12)';
+    status.style.borderColor = 'rgba(239,68,68,.2)';
+  }
+}
+
+// ============================================================
+// EMA HISOBLASH
+// ============================================================
+function calcEMA(data, period) {
+  const k = 2 / (period + 1);
+  const result = [];
+  let ema = data[0].close;
+  for (let i = 0; i < data.length; i++) {
+    if (i === 0) {
+      ema = data[i].close;
+    } else {
+      ema = data[i].close * k + ema * (1 - k);
+    }
+    result.push({
+      time: data[i].time,
+      value: i < period - 1 ? null : ema,
+    });
+  }
+  return result;
+}
+
+// ============================================================
+// ENGULFING ANIQLASH
+// ============================================================
+function isBullEngulf(prev, cur) {
+  return prev.close < prev.open &&
+         cur.close > cur.open &&
+         cur.open <= prev.close &&
+         cur.close >= prev.open;
+}
+
+function isBearEngulf(prev, cur) {
+  return prev.close > prev.open &&
+         cur.close < cur.open &&
+         cur.open >= prev.close &&
+         cur.close <= prev.open;
+}
+
+// ============================================================
+// TREND ANIQLASH (EMA asosida)
+// ============================================================
+function getTrend(ema50, ema200, idx, close) {
+  const f = ema50[idx].value;
+  const s = ema200[idx].value;
+  if (f == null || s == null) return 0;
+  if (f > s && close > f) return 1;   // Up
+  if (f < s && close < f) return -1;  // Down
+  return 0; // Flat
+}
+
+// ============================================================
+// SIGNALLARNI TOPISH
+// ============================================================
+function findSignals(candles, ema50, ema200) {
+  const signals = [];
+  for (let i = 2; i < candles.length; i++) {
+    const trend = getTrend(ema50, ema200, i, candles[i].close);
+    if (trend === 0) continue;
+
+    const prev = candles[i - 1];
+    const cur = candles[i];
+
+    if (trend === 1 && isBullEngulf(prev, cur)) {
+      signals.push({
+        time: cur.time,
+        type: 'BUY',
+        price: cur.close,
+        entry: prev.low,
+      });
+    }
+    if (trend === -1 && isBearEngulf(prev, cur)) {
+      signals.push({
+        time: cur.time,
+        type: 'SELL',
+        price: cur.close,
+        entry: prev.high,
+      });
+    }
+  }
+  return signals;
+}
+
+// ============================================================
+// LOG KO'RSATISH
+// ============================================================
+function renderLog(signals) {
+  const log = document.getElementById('log');
+  if (signals.length === 0) {
+    log.innerHTML = '<div class="empty">Hozircha signal yo\'q</div>';
+    return;
+  }
+  const recent = signals.slice(-30).reverse();
+  log.innerHTML = recent.map(s => {
+    const d = new Date(s.time * 1000);
+    const t = d.toLocaleString('uz-UZ', {
+      day:'2-digit', month:'2-digit',
+      hour:'2-digit', minute:'2-digit'
+    });
+    return `<div class="log-row">
+      <span class="t">${t}</span>
+      <span class="s ${s.type === 'BUY' ? 'buy' : 'sell'}">${s.type}</span>
+      <span class="p">${s.price.toFixed(2)}</span>
+    </div>`;
+  }).join('');
+}
+
+// ============================================================
+// SYMBOL / TIMEFRAME O'ZGARTIRISH
+// ============================================================
+function setSym(el, sym) {
+  document.querySelectorAll('[data-sym]').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  CFG.symbol = sym;
+  loadData();
+}
+
+function setTF(el, tf) {
+  document.querySelectorAll('[data-tf]').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  CFG.interval = tf;
+  loadData();
+}
+
+// ============================================================
+// BOSHLASH
+// ============================================================
+window.addEventListener('DOMContentLoaded', () => {
+  initChart();
+  loadData();
+});
+</script>
+</body>
+</html>
