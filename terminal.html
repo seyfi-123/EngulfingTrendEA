@@ -27,6 +27,8 @@ body{background:var(--bg);color:var(--txt);overflow-x:hidden;font-weight:400}
   display:flex;align-items:center;gap:5px}
 .hdr .status::before{content:'';width:5px;height:5px;border-radius:50%;
   background:currentColor;animation:pulse 1.8s ease infinite}
+.hdr .status.err{background:rgba(239,68,68,.12);color:#fca5a5;
+  border-color:rgba(239,68,68,.2)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
 .controls{padding:10px 12px;background:var(--srf);border-bottom:1px solid var(--brd);
@@ -48,8 +50,10 @@ body{background:var(--bg);color:var(--txt);overflow-x:hidden;font-weight:400}
   margin-right:10px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-.info{padding:12px;background:var(--srf);border-top:1px solid var(--brd)}
-.legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:10px;color:var(--mut)}
+.info{padding:12px;background:var(--srf);border-top:1px solid var(--brd);
+  padding-bottom:30px}
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:10px;
+  color:var(--mut)}
 .legend span{display:flex;align-items:center;gap:4px}
 .dot{width:8px;height:8px;border-radius:2px}
 
@@ -63,15 +67,19 @@ body{background:var(--bg);color:var(--txt);overflow-x:hidden;font-weight:400}
 .stat.buy .val{color:#6ee7b7}
 .stat.sell .val{color:#fca5a5}
 
-.log{max-height:180px;overflow-y:auto;scrollbar-width:thin;
+.log-title{font-size:10px;color:var(--mut);margin-bottom:6px;
+  text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+
+.log{max-height:200px;overflow-y:auto;scrollbar-width:thin;
   background:var(--srf2);border:1px solid var(--brd);border-radius:10px}
 .log::-webkit-scrollbar{width:3px}
 .log::-webkit-scrollbar-thumb{background:var(--silver-d);border-radius:2px}
-.log-row{display:grid;grid-template-columns:60px 1fr 50px;gap:8px;
-  padding:8px 10px;font-size:10px;border-bottom:1px solid var(--brd);align-items:center}
+.log-row{display:grid;grid-template-columns:70px 1fr 60px;gap:8px;
+  padding:8px 10px;font-size:10px;border-bottom:1px solid var(--brd);
+  align-items:center}
 .log-row:last-child{border-bottom:0}
 .log-row .t{color:var(--mut);font-family:monospace}
-.log-row .s{font-weight:600;padding:2px 6px;border-radius:5px;text-align:center;
+.log-row .s{font-weight:600;padding:3px 6px;border-radius:5px;text-align:center;
   font-size:9px;letter-spacing:.3px}
 .log-row .s.buy{background:rgba(16,185,129,.15);color:#6ee7b7}
 .log-row .s.sell{background:rgba(239,68,68,.15);color:#fca5a5}
@@ -98,7 +106,8 @@ body{background:var(--bg);color:var(--txt);overflow-x:hidden;font-weight:400}
   <div class="chip" data-sym="ETHUSDT" onclick="setSym(this,'ETHUSDT')">ETH/USDT</div>
   <div class="chip" data-sym="BNBUSDT" onclick="setSym(this,'BNBUSDT')">BNB/USDT</div>
   <div class="chip" data-sym="SOLUSDT" onclick="setSym(this,'SOLUSDT')">SOL/USDT</div>
-  <div style="width:1px;background:var(--brd2);margin:0 4px"></div>
+  <div class="chip" data-sym="XRPUSDT" onclick="setSym(this,'XRPUSDT')">XRP/USDT</div>
+  <div style="width:1px;background:var(--brd2);margin:0 4px;flex-shrink:0"></div>
   <div class="chip" data-tf="5m" onclick="setTF(this,'5m')">M5</div>
   <div class="chip active" data-tf="15m" onclick="setTF(this,'15m')">M15</div>
   <div class="chip" data-tf="1h" onclick="setTF(this,'1h')">H1</div>
@@ -114,31 +123,28 @@ body{background:var(--bg);color:var(--txt);overflow-x:hidden;font-weight:400}
 
 <div class="info">
   <div class="legend">
-    <span><div class="dot" style="background:#60a5fa"></div>EMA 50</span>
-    <span><div class="dot" style="background:#ef4444"></div>EMA 200</span>
+    <span><div class="dot" style="background:#60a5fa"></div>EMA 50 (tez)</span>
+    <span><div class="dot" style="background:#ef4444"></div>EMA 200 (sekin)</span>
     <span><div class="dot" style="background:#10b981"></div>BUY signal</span>
     <span><div class="dot" style="background:#ef4444"></div>SELL signal</span>
   </div>
 
   <div class="stats">
     <div class="stat buy">
-      <div class="lbl">BUY</div>
+      <div class="lbl">🟢 BUY</div>
       <div class="val" id="buyCount">0</div>
     </div>
     <div class="stat sell">
-      <div class="lbl">SELL</div>
+      <div class="lbl">🔴 SELL</div>
       <div class="val" id="sellCount">0</div>
     </div>
     <div class="stat">
-      <div class="lbl">Jami</div>
+      <div class="lbl">📊 Jami</div>
       <div class="val" id="totalCount">0</div>
     </div>
   </div>
 
-  <div style="font-size:10px;color:var(--mut);margin-bottom:6px;
-              text-transform:uppercase;letter-spacing:.5px;font-weight:600">
-    📋 Signal jurnali
-  </div>
+  <div class="log-title">📋 Signal jurnali</div>
   <div class="log" id="log">
     <div class="empty">Signal kutilmoqda...</div>
   </div>
@@ -232,10 +238,13 @@ async function loadData() {
   const loading = document.getElementById('loading');
   const status = document.getElementById('status');
   loading.classList.remove('hide');
+  loading.innerHTML = '<div class="spinner"></div><span>Ma\'lumot yuklanmoqda...</span>';
   status.innerText = 'Yuklanmoqda...';
+  status.className = 'status';
 
   try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${CFG.symbol}&interval=${CFG.interval}&limit=${CFG.limit}`;
+    const url = 'https://api.binance.com/api/v3/klines?symbol=' + CFG.symbol +
+                '&interval=' + CFG.interval + '&limit=' + CFG.limit;
     const res = await fetch(url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const raw = await res.json();
@@ -250,7 +259,7 @@ async function loadData() {
 
     candleSeries.setData(allCandles);
 
-    // EMA
+    // EMA hisoblash
     const ema50 = calcEMA(allCandles, CFG.emaFast);
     const ema200 = calcEMA(allCandles, CFG.emaSlow);
     ema50Series.setData(ema50.filter(d => d.value != null));
@@ -279,21 +288,19 @@ async function loadData() {
     // Log
     renderLog(signals);
 
-    // Auto-scroll oxiriga
+    // Auto-scroll
     chart.timeScale().fitContent();
 
     loading.classList.add('hide');
-    status.innerText = 'Online';
-    status.style.color = '#6ee7b7';
+    status.innerText = 'Online • ' + CFG.symbol + ' ' + CFG.interval;
+    status.className = 'status';
   } catch (e) {
-    loading.innerHTML = `<div style="color:#fca5a5;text-align:center;padding:20px">
-      ⚠️ Xato: ${e.message}<br>
-      <div style="font-size:11px;color:#94a3b8;margin-top:8px">Boshqa symbol sinab ko'ring</div>
-    </div>`;
+    loading.innerHTML = '<div style="color:#fca5a5;text-align:center;padding:20px">' +
+      '⚠️ Xato: ' + e.message + '<br>' +
+      '<div style="font-size:11px;color:#94a3b8;margin-top:8px">' +
+      'Boshqa symbol sinab ko\'ring</div></div>';
     status.innerText = 'Offline';
-    status.style.color = '#fca5a5';
-    status.style.background = 'rgba(239,68,68,.12)';
-    status.style.borderColor = 'rgba(239,68,68,.2)';
+    status.className = 'status err';
   }
 }
 
@@ -336,15 +343,15 @@ function isBearEngulf(prev, cur) {
 }
 
 // ============================================================
-// TREND ANIQLASH (EMA asosida)
+// TREND ANIQLASH
 // ============================================================
 function getTrend(ema50, ema200, idx, close) {
   const f = ema50[idx].value;
   const s = ema200[idx].value;
   if (f == null || s == null) return 0;
-  if (f > s && close > f) return 1;   // Up
-  if (f < s && close < f) return -1;  // Down
-  return 0; // Flat
+  if (f > s && close > f) return 1;
+  if (f < s && close < f) return -1;
+  return 0;
 }
 
 // ============================================================
@@ -364,7 +371,6 @@ function findSignals(candles, ema50, ema200) {
         time: cur.time,
         type: 'BUY',
         price: cur.close,
-        entry: prev.low,
       });
     }
     if (trend === -1 && isBearEngulf(prev, cur)) {
@@ -372,7 +378,6 @@ function findSignals(candles, ema50, ema200) {
         time: cur.time,
         type: 'SELL',
         price: cur.close,
-        entry: prev.high,
       });
     }
   }
@@ -391,15 +396,19 @@ function renderLog(signals) {
   const recent = signals.slice(-30).reverse();
   log.innerHTML = recent.map(s => {
     const d = new Date(s.time * 1000);
-    const t = d.toLocaleString('uz-UZ', {
-      day:'2-digit', month:'2-digit',
-      hour:'2-digit', minute:'2-digit'
-    });
-    return `<div class="log-row">
-      <span class="t">${t}</span>
-      <span class="s ${s.type === 'BUY' ? 'buy' : 'sell'}">${s.type}</span>
-      <span class="p">${s.price.toFixed(2)}</span>
-    </div>`;
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    const t = dd + '.' + mm + ' ' + hh + ':' + mi;
+    const priceStr = s.price < 1 ? s.price.toFixed(4)
+                    : s.price < 100 ? s.price.toFixed(2)
+                    : s.price.toFixed(2);
+    return '<div class="log-row">' +
+      '<span class="t">' + t + '</span>' +
+      '<span class="s ' + (s.type === 'BUY' ? 'buy' : 'sell') + '">' + s.type + '</span>' +
+      '<span class="p">' + priceStr + '</span>' +
+    '</div>';
   }).join('');
 }
 
