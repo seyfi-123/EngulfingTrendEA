@@ -232,7 +232,7 @@ function initChart(){
 }
 
 // ============================================================
-// MA'LUMOT
+// MA'LUMOT YUKLASH
 // ============================================================
 async function loadData(){
   const loading = document.getElementById('loading');
@@ -320,7 +320,8 @@ function calcATR(data, period){
 }
 
 // ============================================================
-// 1 SHAM 2 SHAMNI YUTADI (klassik 3-candle pattern)
+// YUMSHATILGAN — 1 sham 2 shamni yutadi
+// Faqat close muhim — 2 qizilning eng yuqorisidan oshsa signal
 // ============================================================
 function isBullEngulf2(p2, p1, cur){
   // cur YASHIL
@@ -329,12 +330,11 @@ function isBullEngulf2(p2, p1, cur){
   if(p1.close >= p1.open) return false;
   if(p2.close >= p2.open) return false;
 
-  // 2 qizil shamning eng yuqori OPEN va eng past CLOSE (TANA)
-  const redTop    = Math.max(p1.open, p2.open);
-  const redBottom = Math.min(p1.close, p2.close);
+  // 2 qizil shamning eng yuqori OPEN
+  const redTop = Math.max(p1.open, p2.open);
 
-  // Yashil sham tanasi ularni to'liq yutadi
-  return cur.open <= redBottom && cur.close >= redTop;
+  // Yashil shamning YOPILISHI 2 qizilning yuqorisidan oshsa
+  return cur.close > redTop;
 }
 
 function isBearEngulf2(p2, p1, cur){
@@ -342,25 +342,40 @@ function isBearEngulf2(p2, p1, cur){
   if(p1.close <= p1.open) return false;
   if(p2.close <= p2.open) return false;
 
-  const greenTop    = Math.max(p1.close, p2.close);
   const greenBottom = Math.min(p1.open, p2.open);
-
-  return cur.open >= greenTop && cur.close <= greenBottom;
+  return cur.close < greenBottom;
 }
 
 // ============================================================
-// TREND
+// YUMSHATILGAN TREND
 // ============================================================
-function getTrend(ema50, ema200, idx, close){
-  const f = ema50[idx].value, s = ema200[idx].value;
-  if(f==null || s==null) return 0;
-  if(f > s && close > f) return 1;
-  if(f < s && close < f) return -1;
+function getTrend(ema50, ema200, atr, idx, cl){
+  const f = ema50[idx].value;
+  const s = ema200[idx].value;
+  if(f == null || s == null) return 0;
+
+  const range = cl.high - cl.low;
+  const body = Math.abs(cl.close - cl.open);
+  const atrVal = atr[idx].value;
+
+  // 1. Kuchli trend
+  if(f > s && cl.close > f) return 1;
+  if(f < s && cl.close < f) return -1;
+
+  // 2. Yumshoq trend: narx ikkala EMAdan yuqori (yoki past)
+  if(cl.close > f && cl.close > s) return 1;
+  if(cl.close < f && cl.close < s) return -1;
+
+  // 3. Kuchli sham (ATR dan katta) — trend yo'q bo'lsa ham signal
+  if(atrVal && body > atrVal * 1.2){
+    return cl.close > cl.open ? 1 : -1;
+  }
+
   return 0;
 }
 
 // ============================================================
-// ASOSIY LOGIKA — 100% EA
+// ASOSIY LOGIKA
 // ============================================================
 function findTrades(candles, ema50, ema200, atr){
   const trades = [];
@@ -422,14 +437,14 @@ function findTrades(candles, ema50, ema200, atr){
     if(now < pauseUntil) continue;
     if(inPos) continue;
 
-    // === 2. Signal ===
+    // === 2. Signal tekshiruvi ===
     const idx = i - 1;
     const cl = candles[idx];
     const p1 = candles[idx - 1];
     const p2 = candles[idx - 2];
     if(!cl || !p1 || !p2) continue;
 
-    const trend = getTrend(ema50, ema200, idx, cl.close);
+    const trend = getTrend(ema50, ema200, atr, idx, cl);
     if(trend === 0) continue;
 
     const atrVal = atr[idx].value;
@@ -437,9 +452,11 @@ function findTrades(candles, ema50, ema200, atr){
 
     const range = cl.high - cl.low;
 
+    // RR: ATR
     let rr = 2;
     if(range > atrVal * atrMult) rr = 3;
 
+    // Kuchli trend → RR = 5
     const f = ema50[idx].value, s = ema200[idx].value;
     let strongTrend = false;
     if(f != null && s != null){
@@ -447,6 +464,7 @@ function findTrades(candles, ema50, ema200, atr){
     }
     const effectiveRR = strongTrend ? CFG.ladderMaxR : rr;
 
+    // === 2 SHAM YUTISH ===
     let sigType = null, isCounter = false;
 
     if(trend === 1 && isBullEngulf2(p2, p1, cl)){
@@ -454,6 +472,7 @@ function findTrades(candles, ema50, ema200, atr){
     } else if(trend === -1 && isBearEngulf2(p2, p1, cl)){
       sigType = 'SELL';
     } else {
+      // Counter-trend
       const lowerTF = CFG.interval === '5m' || CFG.interval === '15m';
       if(lowerTF){
         if(trend === 1 && isBearEngulf2(p2, p1, cl) && range > atrVal * CFG.counterTrendATR){
@@ -466,6 +485,7 @@ function findTrades(candles, ema50, ema200, atr){
 
     if(!sigType) continue;
 
+    // === SL: 2 shamning ekstremumi ===
     let slPrice, slDist;
     if(sigType === 'BUY'){
       slPrice = Math.min(p1.low, p2.low) - slBuf * pipSize;
@@ -476,10 +496,12 @@ function findTrades(candles, ema50, ema200, atr){
     }
     if(slDist <= 0) continue;
 
+    // === TP ===
     let tpPrice;
     if(sigType === 'BUY') tpPrice = cl.close + slDist * effectiveRR;
     else tpPrice = cl.close - slDist * effectiveRR;
 
+    // === RISK ===
     let riskPct = getRisk();
     if(isCounter) riskPct *= CFG.counterTrendRisk;
     if(lastResult === 0) riskPct *= CFG.postLossRisk;
@@ -497,10 +519,25 @@ function findTrades(candles, ema50, ema200, atr){
     inPos = true;
   }
 
+  // === MAJBURIY YOPISH — Oxirgi ochiq pozitsiya ===
   if(cur){
-    cur.result = 'OPEN';
-    cur.pnl = 0;
-    cur.pips = 0;
+    const lastCandle = candles[candles.length - 1];
+    const exitP = lastCandle.close;
+
+    let pnlPerUnit;
+    if(cur.type === 'BUY'){
+      pnlPerUnit = (exitP - cur.entry) / cur.slDist;
+    } else {
+      pnlPerUnit = (cur.entry - exitP) / cur.slDist;
+    }
+
+    cur.pnl = cur.riskMoney * pnlPerUnit;
+    cur.pips = Math.abs(pnlPerUnit * cur.slDist / getPipSize(CFG.symbol));
+    cur.exitPrice = exitP;
+    cur.exitTime = lastCandle.time;
+    cur.result = cur.pnl >= 0 ? 'WIN' : 'LOSS';
+    cur.manualClose = true;
+
     trades.push(cur);
   }
 
@@ -600,7 +637,8 @@ function renderLog(trades){
     if(t.result === 'LOSS'){ rClass='loss'; rText=t.pnl.toFixed(1)+'$'; pipsText='-'+t.pips.toFixed(0)+'p'; }
 
     const meta = 'RR 1:'+t.rr+' · risk '+t.riskMoney.toFixed(1)+'$' +
-      (t.strongTrend ? ' · STRONG' : '') + (t.isCounter ? ' · CT' : '');
+      (t.strongTrend ? ' · STRONG' : '') + (t.isCounter ? ' · CT' : '') +
+      (t.manualClose ? ' · YOPILDI' : '');
 
     return '<div class="log-row">' +
       '<span class="t">'+ts+'</span>' +
