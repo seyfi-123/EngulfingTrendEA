@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Engulfing · Fast v5.1 (1 trade/candle)</title>
+<title>Engulfing · v6.0 (Candle Close + SL% + Cooldown)</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,sans-serif}
@@ -53,12 +53,12 @@ body{background:#0a0b0f;color:#e2e8f0}
 .b-tr{background:#06b6d433;color:#67e8f9}
 .b-comm{background:#ef444433;color:#fca5a5}
 .b-max{background:#a855f733;color:#c4b5fd}
-.b-new{background:#06b6d422;color:#22d3ee}
+.b-cd{background:#f9731633;color:#fdba74}
 </style>
 </head>
 <body>
 
-<div class="h"><b>⚡ Engulfing · Fast v5.1</b><div class="st" id="st">...</div></div>
+<div class="h"><b>⚡ Engulfing · v6.0</b><div class="st" id="st">...</div></div>
 
 <div class="c">
 <div class="b" onclick="S(this,'s','ETHUSDT')">ETH</div>
@@ -91,24 +91,27 @@ body{background:#0a0b0f;color:#e2e8f0}
 <div class="m" style="grid-template-columns:1fr 1fr 1fr">
 <div>🛡️ BE<b id="bes">0</b></div>
 <div>📈 Max R<b id="maxr">0</b></div>
-<div>📅 Kun/Trade<b id="kdt">0</b></div>
+<div>🚫 Cooldown skip<b id="cdskip">0</b></div>
 </div>
 <div class="ctrl">
 <span>Balans:</span><input type="number" id="balInput" value="1000" step="100" onchange="load()">
-<span>SLbuf:</span><input type="number" id="slBufInput" value="10" step="5" onchange="load()">
+<span>SL%:</span><input type="number" id="slPctInput" value="0.3" step="0.1" onchange="load()">
 <span>Lot:</span><input type="number" id="lotStart" value="0.05" step="0.01" onchange="load()">
 <span>Cap:</span><input type="number" id="lotCap" value="0.50" step="0.05" onchange="load()">
+<span>CD sham:</span><input type="number" id="cdCandles" value="4" step="1" onchange="load()">
 <span>Comm‰:</span><input type="number" id="commInput" value="5" step="1" onchange="load()">
 <label><input type="checkbox" id="commOn" checked onchange="load()"> Komissiya</label>
-<span style="color:#22d3ee">🆕 1 trade/candle</span>
 </div>
-<div class="hd"><span>📋 Savdolar · 1 sham = 1 savdo · BE@1:1 · Trail 0.5R</span><span id="lc">0</span></div>
+<div class="hd"><span>📋 Candle Close · SL% · Cooldown 4 sham · BE@1:1 · Trail 0.5R</span><span id="lc">0</span></div>
 <div class="lst" id="lst"><div style="padding:20px;text-align:center;color:#94a3b8">Kutilmoqda...</div></div>
 </div>
 
 <script>
 // ============================================================
-// SOZLAMALAR — v5.1 (1 trade per candle + cooldown)
+// SOZLAMALAR — v6.0
+// 🆕 Candle Close (fast entry off)
+// 🆕 SL% (0.3% default)
+// 🆕 Cooldown = 4 sham
 // ============================================================
 const CFG = { sym: 'SOLUSDT', tf: '15m', mo: 3 };
 const TP1_PCT = 0.15;
@@ -116,16 +119,11 @@ const TP1_AT_R = 2.0;
 const BE_AT_R = 1.0;
 const TRAIL_STEP = 0.5;
 
-// Cooldown 15 daqiqa (baroi 15m TF)
-function getCooldown(){
-  const tfMin = { '15m': 15, '30m': 30, '1h': 60 };
-  return (tfMin[CFG.tf] || 15) * 60;  // soniyada
-}
-
 function getBal(){ return parseFloat(document.getElementById('balInput').value) || 1000; }
-function getSLBuf(){ return parseFloat(document.getElementById('slBufInput').value) || 10; }
+function getSLPct(){ return (parseFloat(document.getElementById('slPctInput').value) || 0.3) / 100; }
 function getLotStart(){ return parseFloat(document.getElementById('lotStart').value) || 0.05; }
 function getLotCap(){ return parseFloat(document.getElementById('lotCap').value) || 0.50; }
+function getCDCandles(){ return parseInt(document.getElementById('cdCandles').value) || 4; }
 function getCommRate(){
   if(!document.getElementById('commOn').checked) return 0;
   return (parseFloat(document.getElementById('commInput').value) || 5) / 10000;
@@ -184,17 +182,19 @@ async function fetchCandles(){
 }
 
 // ============================================================
-// TRADE ENGINE v5.1
-// 🆕 1 trade / candle
-// 🆕 Cooldown = 15 min
+// TRADE ENGINE v6.0
+// 🆕 Candle Close — signal only at close (index-based)
+// 🆕 SL% — stop loss as percent of price
+// 🆕 Cooldown — 4 sham since last close
 // ============================================================
 class TradeEngine {
-  constructor(initialBalance, lotStart, lotCap, slBuf){
+  constructor(initialBalance, lotStart, lotCap, slPct, cdCandles){
     this.balance = initialBalance;
     this.initialBalance = initialBalance;
     this.lotStart = lotStart;
     this.lotCap = lotCap;
-    this.slBuf = slBuf;
+    this.slPct = slPct;
+    this.cdCandles = cdCandles;
     this.commRate = getCommRate();
     this.currentLot = lotStart;
     this.completedTrades = 0;
@@ -208,13 +208,10 @@ class TradeEngine {
     this.totalCommission = 0;
     this.totalGross = 0;
     this.maxRSeen = 0;
-    this.fastEntries = 0;
-    // 🆕 Track last entry candle + time
-    this.lastEntryCandleTime = 0;
-    this.lastEntryTime = 0;
-    this.cooldown = getCooldown();
-    this.skippedByCooldown = 0;
-    this.skippedByCandle = 0;
+    this.signalsChecked = 0;
+    // 🆕 Cooldown tracking by candle index
+    this.lastCloseIdx = -999;
+    this.cdSkips = 0;
   }
 
   updateLot(){
@@ -239,21 +236,16 @@ class TradeEngine {
     return null;
   }
 
-  openTrade(signal, candle){
-    // 🆕 QOIDA 1: 1 shm = 1 trade
-    if(candle.time === this.lastEntryCandleTime){
-      this.skippedByCandle++;
-      return false;
-    }
-
-    // 🆕 QOIDA 2: Cooldown 15 min
-    if(this.lastEntryTime > 0 && (candle.time - this.lastEntryTime) < this.cooldown){
-      this.skippedByCooldown++;
+  openTrade(signal, candle, idx){
+    // 🆕 Cooldown check
+    if(idx - this.lastCloseIdx < this.cdCandles){
+      this.cdSkips++;
       return false;
     }
 
     const cur = candle;
-    const buf = this.slBuf * (cur.close / 100000);
+    // 🆕 SL% based on price
+    const buf = cur.close * this.slPct;
 
     let sl, slDist;
     if(signal.type === 'B'){
@@ -290,18 +282,14 @@ class TradeEngine {
       maxR: 0,
       trailSteps: 0,
       engulfCandles: 1,
+      openIdx: idx,
     });
-    this.fastEntries++;
-
-    // 🆕 Update trackers
-    this.lastEntryCandleTime = candle.time;
-    this.lastEntryTime = candle.time;
-
     return true;
   }
 
-  managePositions(candle){
-    const buf = this.slBuf * (candle.close / 100000);
+  managePositions(candle, idx){
+    // 🆕 SL% based buf
+    const buf = candle.close * this.slPct;
 
     for(let i = this.positions.length - 1; i >= 0; i--){
       const p = this.positions[i];
@@ -316,7 +304,7 @@ class TradeEngine {
       }
 
       if(exit !== null){
-        this.closePosition(i, exit, exitR, candle.time, candle);
+        this.closePosition(i, exit, exitR, candle.time, candle, idx);
         continue;
       }
 
@@ -326,6 +314,7 @@ class TradeEngine {
       if(rNow > p.maxR) p.maxR = rNow;
       if(rNow > this.maxRSeen) this.maxRSeen = rNow;
 
+      // TP1 @ 2R
       if(p.maxR >= TP1_AT_R && !p.tp1Done){
         p.tp1Done = true;
         this.tp1Hits++;
@@ -347,6 +336,7 @@ class TradeEngine {
         p.qty = 1 - TP1_PCT;
       }
 
+      // Trail SL (closed candle)
       if(p.type === 'B'){
         const candidate = candle.low - buf;
         if(candidate > p.sl) p.sl = candidate;
@@ -355,6 +345,7 @@ class TradeEngine {
         if(candidate < p.sl) p.sl = candidate;
       }
 
+      // BE + Step Trail
       let closedR;
       if(p.type === 'B') closedR = (candle.high - p.entry) / p.slDist;
       else closedR = (p.entry - candle.low) / p.slDist;
@@ -391,7 +382,7 @@ class TradeEngine {
     }
   }
 
-  closePosition(idx, exit, exitR, time, candle){
+  closePosition(idx, exit, exitR, time, candle, candleIdx){
     const p = this.positions[idx];
 
     const grossPnl = exitR * p.riskPerR * p.qty;
@@ -418,20 +409,26 @@ class TradeEngine {
     this.updateLot();
     this.trades.push(p);
     this.positions.splice(idx, 1);
+
+    // 🆕 Save close index for cooldown
+    this.lastCloseIdx = candleIdx;
   }
 
   run(cd){
+    // 🆕 Start from index 1 (need p1), and process candle by candle
+    // Signal is checked ONLY on candle close (which is the natural backtest step)
     for(let i = 1; i < cd.length; i++){
       // 1. Manage existing positions
       if(this.positions.length > 0){
-        this.managePositions(cd[i]);
+        this.managePositions(cd[i], i);
       }
 
-      // 2. New signal (only if no open positions)
+      // 2. Check for new signal (only when position closed)
       if(this.positions.length === 0){
+        this.signalsChecked++;
         const signal = this.checkEngulfing(cd, i);
         if(signal){
-          this.openTrade(signal, cd[i]);
+          this.openTrade(signal, cd[i], i);
         }
       }
     }
@@ -443,7 +440,7 @@ class TradeEngine {
       let exitR;
       if(p.type === 'B') exitR = (last.close - p.entry) / p.slDist;
       else exitR = (p.entry - last.close) / p.slDist;
-      this.closePosition(0, last.close, exitR, last.time, last);
+      this.closePosition(0, last.close, exitR, last.time, last, cd.length - 1);
     }
 
     return {
@@ -457,17 +454,15 @@ class TradeEngine {
       totalGross: this.totalGross,
       finalBalance: this.balance,
       maxRSeen: this.maxRSeen,
-      fastEntries: this.fastEntries,
-      skippedByCooldown: this.skippedByCooldown,
-      skippedByCandle: this.skippedByCandle,
-      cooldown: this.cooldown,
+      signalsChecked: this.signalsChecked,
+      cdSkips: this.cdSkips,
     };
   }
 }
 
 function calcTrades(cd){
   const engine = new TradeEngine(
-    getBal(), getLotStart(), getLotCap(), getSLBuf()
+    getBal(), getLotStart(), getLotCap(), getSLPct(), getCDCandles()
   );
   return engine.run(cd);
 }
@@ -506,10 +501,7 @@ function stats(result){
   document.getElementById('tpt').textContent = result.tp1Hits + '/' + result.trailSteps;
   document.getElementById('bes').textContent = be;
   document.getElementById('maxr').textContent = result.maxRSeen.toFixed(1) + 'R';
-
-  // Days calc
-  const days = Math.max(1, Math.round((trades[trades.length-1].time - trades[0].time) / 86400));
-  document.getElementById('kdt').textContent = (trades.length / days).toFixed(1);
+  document.getElementById('cdskip').textContent = result.cdSkips;
 
   document.getElementById('lc').textContent = trades.length;
 
@@ -590,7 +582,7 @@ async function load(){
     chart.timeScale().fitContent();
     ld.classList.add('x');
     st.textContent = '✅ ' + CFG.sym + ' ' + CFG.tf + ' · ' + result.trades.length +
-                     ' savdo · Cooldown skip: ' + (result.skippedByCooldown + result.skippedByCandle);
+                     ' savdo · CD skip: ' + result.cdSkips;
   } catch(e){
     ld.textContent = '⚠️ ' + e.message;
     st.textContent = 'Xato';
