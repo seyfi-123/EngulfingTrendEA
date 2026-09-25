@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Engulfing · Commission Aware</title>
+<title>Engulfing · Commission ON</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,sans-serif}
@@ -24,7 +24,7 @@ body{background:#0a0b0f;color:#e2e8f0}
 .k i{font-size:9px;color:#94a3b8;text-transform:uppercase;font-style:normal;display:block;margin-bottom:4px}
 .k b{font-size:18px;font-weight:700}
 .k .sub{font-size:9px;color:#64748b;margin-top:3px}
-.g{color:#6ee7b7}.r2{color:#fca5a5}.o{color:#fbbf24}.b{color:#60a5fa}
+.g{color:#6ee7b7}.r2{color:#fca5a5}.o{color:#fbbf24}
 .m{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:5px;margin-bottom:8px}
 .m div{padding:7px;background:#1a1e2e;border-radius:8px;text-align:center;font-size:10px;color:#94a3b8}
 .m div b{display:block;font-size:13px;color:#e2e8f0;margin-top:3px}
@@ -58,7 +58,7 @@ body{background:#0a0b0f;color:#e2e8f0}
 </head>
 <body>
 
-<div class="h"><b>🎯 Engulfing · Commission Aware</b><div class="st" id="st">...</div></div>
+<div class="h"><b>🎯 Engulfing · Commission ON</b><div class="st" id="st">...</div></div>
 
 <div class="c">
 <div class="b on" onclick="S(this,'s','BTCUSDT')">BTC</div>
@@ -93,10 +93,9 @@ body{background:#0a0b0f;color:#e2e8f0}
 <span>SLbuf:</span><input type="number" id="slBufInput" value="10" step="5" onchange="load()">
 <span>Lot:</span><input type="number" id="lotStart" value="0.05" step="0.01" onchange="load()">
 <span>Cap:</span><input type="number" id="lotCap" value="0.50" step="0.05" onchange="load()">
-<span>Cool:</span><input type="number" id="coolInput" value="5" step="1" onchange="load()">
 <span>Comm‰:</span><input type="number" id="commInput" value="5" step="1" onchange="load()">
 <label><input type="checkbox" id="commOn" checked onchange="load()"> Komissiya yoniq</label>
-<span style="color:#6ee7b7">TP1: 15%</span>
+<span style="color:#6ee7b7">TP1: 30%</span>
 </div>
 <div class="hd"><span>📋 Savdolar · Net P&L + Komissiya</span><span id="lc">0</span></div>
 <div class="lst" id="lst"><div style="padding:20px;text-align:center;color:#94a3b8">Kutilmoqda...</div></div>
@@ -107,13 +106,13 @@ body{background:#0a0b0f;color:#e2e8f0}
 // SOZLAMALAR
 // ============================================================
 const CFG = { sym: 'BTCUSDT', tf: '5m', mo: 3 };
-const TP1_PCT = 0.15;       // 15% 1:1 da yopiladi
+const TP1_PCT = 0.30;
+const TRAIL_STEP = 0.5;
 
 function getBal(){ return parseFloat(document.getElementById('balInput').value) || 1000; }
 function getSLBuf(){ return parseFloat(document.getElementById('slBufInput').value) || 10; }
 function getLotStart(){ return parseFloat(document.getElementById('lotStart').value) || 0.05; }
 function getLotCap(){ return parseFloat(document.getElementById('lotCap').value) || 0.50; }
-function getCool(){ return parseInt(document.getElementById('coolInput').value) || 5; }
 function getCommRate(){
   if(!document.getElementById('commOn').checked) return 0;
   return (parseFloat(document.getElementById('commInput').value) || 5) / 10000;
@@ -171,7 +170,7 @@ async function fetchCandles(){
 }
 
 // ============================================================
-// TRADE ENGINE — COMMISSION AWARE
+// TRADE ENGINE — Komissiya bilan
 // ============================================================
 class TradeEngine {
   constructor(initialBalance, lotStart, lotCap, slBuf){
@@ -192,7 +191,6 @@ class TradeEngine {
     this.tp1Hits = 0;
     this.totalCommission = 0;
     this.totalGross = 0;
-    this.lastLossIdx = -999;
   }
 
   updateLot(){
@@ -244,15 +242,10 @@ class TradeEngine {
     }
 
     if(closed){
-      // ========== YOPILISH ==========
-      // Gross foyda (qolgan qism)
+      // YOPILISH komissiyasi
       const grossPnl = exitR * p.riskPerR * p.qty;
-
-      // Yopilish komissiyasi (qolgan qism)
-      const closeSize = this.currentLot * p.qty;   // BTC hajmi
+      const closeSize = p.lot * p.qty;
       const closeComm = closeSize * exit * this.commRate;
-
-      // Net foyda
       const netPnl = grossPnl - closeComm;
 
       p.commission += closeComm;
@@ -260,18 +253,14 @@ class TradeEngine {
       p.pnl += netPnl;
       p.exit = exit;
       p.exitR = exitR;
-      p.manualClose = false;
 
-      // Balance yangilash
       this.balance += netPnl;
       this.totalCommission += closeComm;
       this.totalGross += grossPnl;
 
       if(p.pnl > 0.01){ p.result = 'W'; this.wins++; }
-      else if(p.pnl < -0.01){
-        p.result = 'L'; this.losses++;
-        this.lastLossIdx = p.openIdx;
-      } else { p.result = 'BE'; this.bes++; }
+      else if(p.pnl < -0.01){ p.result = 'L'; this.losses++; }
+      else { p.result = 'BE'; this.bes++; }
 
       this.completedTrades++;
       this.trades.push(p);
@@ -280,73 +269,61 @@ class TradeEngine {
       return;
     }
 
-    // ---- Max R hisoblash ----
+    // ---- Max R ----
     let maxR;
     if(p.type === 'B') maxR = (candle.high - p.entry) / p.slDist;
     else maxR = (p.entry - candle.low) / p.slDist;
 
-    // ========== TP1: 15% da yopiladi ==========
+    // ---- TP1 30% ----
     if(maxR >= 1 && !p.tp1Done){
       p.tp1Done = true;
       this.tp1Hits++;
 
-      // TP1 exit narxi = 1:1
       const tp1Exit = p.type === 'B' ? p.entry + p.slDist : p.entry - p.slDist;
-
-      // TP1 gross foyda = 0.15R
       const tp1Gross = 1.0 * p.riskPerR * TP1_PCT;
-
-      // TP1 komissiya (15% hajm)
-      const tp1Size = this.currentLot * TP1_PCT;
+      const tp1Size = p.lot * TP1_PCT;
       const tp1Comm = tp1Size * tp1Exit * this.commRate;
-
-      // TP1 net foyda
       const tp1Net = tp1Gross - tp1Comm;
 
       p.pnl += tp1Net;
       p.gross += tp1Gross;
       p.commission += tp1Comm;
 
-      // Balance yangilash
       this.balance += tp1Net;
       this.totalCommission += tp1Comm;
       this.totalGross += tp1Gross;
 
-      // Qolgan 85%
       p.qty = 1 - TP1_PCT;
-
-      // Qolgan qism uchun SL = entry (BE)
       p.sl = p.entry;
       p.beSet = true;
     }
 
-    // ========== QOLGAN 85% TRAILING ==========
-    if(p.tp1Done && p.qty > 0){
-      if(maxR >= 1){
-        const lockR = Math.floor(maxR) - 1;
-        if(lockR >= 0){
-          let newSL;
-          if(p.type === 'B'){
-            newSL = p.entry + lockR * p.slDist;
-            if(newSL > p.sl){
-              p.sl = newSL;
-              p.lockR = lockR;
-              this.trailSteps++;
-            }
-          } else {
-            newSL = p.entry - lockR * p.slDist;
-            if(newSL < p.sl){
-              p.sl = newSL;
-              p.lockR = lockR;
-              this.trailSteps++;
-            }
+    // ---- Step trail ----
+    if(maxR >= 1){
+      const steps = Math.floor(maxR / TRAIL_STEP);
+      const lockR = (steps - 2) * TRAIL_STEP;
+      if(lockR >= 0){
+        let newSL;
+        if(p.type === 'B'){
+          newSL = p.entry + lockR * p.slDist;
+          if(newSL > p.sl){
+            p.sl = newSL;
+            p.lockR = lockR;
+            this.trailSteps++;
+          }
+        } else {
+          newSL = p.entry - lockR * p.slDist;
+          if(newSL < p.sl){
+            p.sl = newSL;
+            p.lockR = lockR;
+            this.trailSteps++;
           }
         }
       }
     }
   }
 
-  openTrade(signal, candle, idx){
+  openTrade(signal, candle){
     const cur = candle;
     const buf = this.slBuf * (cur.close / 100000);
 
@@ -362,17 +339,14 @@ class TradeEngine {
 
     const riskPerR = this.currentLot * 100;
 
-    // ========== OCHILISH KOMISSIYASI ==========
+    // OCHILISH komissiyasi
     const openSize = this.currentLot;
     const openComm = openSize * cur.close * this.commRate;
-
-    // Balance dan darhol chegirish
     this.balance -= openComm;
     this.totalCommission += openComm;
 
     this.pos = {
       time: cur.time,
-      openIdx: idx,
       type: signal.type,
       engulfCandles: signal.candles,
       entry: cur.close,
@@ -401,7 +375,7 @@ class TradeEngine {
     else exitR = (p.entry - exit) / p.slDist;
 
     const grossPnl = exitR * p.riskPerR * p.qty;
-    const closeSize = this.currentLot * p.qty;
+    const closeSize = p.lot * p.qty;
     const closeComm = closeSize * exit * this.commRate;
     const netPnl = grossPnl - closeComm;
 
@@ -424,19 +398,15 @@ class TradeEngine {
   }
 
   run(cd){
-    const cooldown = getCool();
-
     for(let i = 2; i < cd.length; i++){
       if(this.pos) this.manageTrade(cd[i]);
       if(this.pos) continue;
 
       const idx = i - 1;
-      if(idx - this.lastLossIdx < cooldown) continue;
-
       const signal = this.checkEngulfing(cd, idx);
       if(!signal) continue;
 
-      this.openTrade(signal, cd[idx], idx);
+      this.openTrade(signal, cd[idx]);
     }
 
     this.forceClose(cd[cd.length - 1]);
@@ -490,7 +460,6 @@ function stats(result){
   document.getElementById('pf').textContent = pf.toFixed(2);
   document.getElementById('tt').textContent = closed;
 
-  // Gross va Commission
   const gross = result.totalGross;
   const comm = result.totalCommission;
   document.getElementById('gross').textContent = (gross >= 0 ? '+' : '') + gross.toFixed(0) + '$';
@@ -520,7 +489,7 @@ function stats(result){
       : '<span class="badge b-1c">1C</span>';
     const tp1Badge = t.tp1Done ? '<span class="badge b-tp1">TP1</span>' : '';
     const beBadge = t.beSet ? '<span class="badge b-be">BE</span>' : '';
-    const lockBadge = t.lockR > 0 ? `<span class="badge b-tr">+${t.lockR}R</span>` : '';
+    const lockBadge = t.lockR > 0 ? `<span class="badge b-tr">+${t.lockR.toFixed(1)}R</span>` : '';
     const commBadge = `<span class="badge b-comm">-${t.commission.toFixed(1)}$</span>`;
 
     const grossTxt = `gross ${t.gross >= 0 ? '+' : ''}${t.gross.toFixed(1)}$`;
