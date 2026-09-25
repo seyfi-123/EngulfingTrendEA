@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.0 — FINAL (ThreadedWebsocketManager)
+# EngulfingTrend Bot v5.1 — FINAL (BinanceSocketManager, async)
 # ============================================================
 import os
 import asyncio
@@ -8,7 +8,7 @@ import time
 import io
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from binance import AsyncClient, ThreadedWebsocketManager
+from binance import AsyncClient, BinanceSocketManager
 from binance.enums import SIDE_BUY, SIDE_SELL, ORDER_TYPE_MARKET
 from telegram import Bot, InputFile
 from telegram.constants import ParseMode
@@ -336,61 +336,52 @@ ENGINES = {}
 
 
 # ============================================================
-# WORKER (ThreadedWebsocketManager bilan)
+# WORKER (BinanceSocketManager bilan — async, barqaror)
 # ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
     ENGINES[symbol] = eng
     log.info(f"🔵 {symbol} worker boshlandi")
 
-    twm = ThreadedWebsocketManager(
-        api_key=CONFIG['API_KEY'],
-        api_secret=CONFIG['API_SECRET'],
-        testnet=CONFIG['TESTNET']
-    )
-
-    def handle_kline(msg):
-        try:
-            loop = asyncio.get_event_loop()
-            asyncio.run_coroutine_threadsafe(
-                process_kline(client, eng, msg), loop
-            )
-        except Exception as e:
-            log.error(f"{symbol} callback xato: {e}")
-
-    async def process_kline(client, eng, msg):
-        if msg.get('e') != 'kline': return
-        k = msg['k']
-        candle = {
-            'time':   k['t'] // 1000,
-            'open':   float(k['o']),
-            'high':   float(k['h']),
-            'low':    float(k['l']),
-            'close':  float(k['c']),
-            'closed': k['x'],
-        }
-        if candle['closed']:
-            eng.candles.append(candle)
-            if len(eng.candles) > 200: eng.candles.pop(0)
-            if not eng.pos:
-                idx = len(eng.candles) - 1
-                sig = eng.checkEngulfing(eng.candles, idx)
-                if sig:
-                    await eng.openReal(client, sig, candle)
-        if eng.pos:
-            closed = eng.manageLocal(eng.pos, candle)
-            if closed:
-                await eng.closeReal(client)
-
-    twm.start()
-    twm.start_kline_socket(
-        callback=handle_kline,
-        symbol=symbol,
-        interval=CONFIG['INTERVAL']
-    )
+    bsm = BinanceSocketManager(client)
 
     while True:
-        await asyncio.sleep(60)
+        try:
+            socket = bsm.kline_socket(symbol=symbol, interval=CONFIG['INTERVAL'])
+            async with socket as stream:
+                log.info(f"🟢 {symbol} socket ulandi")
+                while True:
+                    msg = await stream.recv()
+                    if not msg or msg.get('e') != 'kline':
+                        continue
+
+                    k = msg['k']
+                    candle = {
+                        'time':   k['t'] // 1000,
+                        'open':   float(k['o']),
+                        'high':   float(k['h']),
+                        'low':    float(k['l']),
+                        'close':  float(k['c']),
+                        'closed': k['x'],
+                    }
+
+                    if candle['closed']:
+                        eng.candles.append(candle)
+                        if len(eng.candles) > 200: eng.candles.pop(0)
+                        if not eng.pos:
+                            idx = len(eng.candles) - 1
+                            sig = eng.checkEngulfing(eng.candles, idx)
+                            if sig:
+                                await eng.openReal(client, sig, candle)
+
+                    if eng.pos:
+                        closed = eng.manageLocal(eng.pos, candle)
+                        if closed:
+                            await eng.closeReal(client)
+
+        except Exception as e:
+            log.error(f"{symbol} socket xato: {e} — 5s dan keyin qayta ulanadi")
+            await asyncio.sleep(5)
 
 
 # ============================================================
@@ -449,13 +440,13 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.0 ishga tushdi")
+    log.info("🚀 Bot v5.1 ishga tushdi")
     log.info(f"Symbols: {CONFIG['SYMBOLS']}")
     log.info(f"TF: {CONFIG['INTERVAL']} | TESTNET: {CONFIG['TESTNET']}")
     log.info(f"Komissiya: {CONFIG['COMM_RATE']*100:.2f}%")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.0</b>\n"
+        f"🚀 <b>Engulfing Bot v5.1</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Symbols: <b>{', '.join(CONFIG['SYMBOLS'])}</b>\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
@@ -478,6 +469,7 @@ async def main():
         await asyncio.gather(*tasks)
     except Exception as e:
         log.error(f"Main xato: {e}")
+    finally:
         await client.close_connection()
 
 
