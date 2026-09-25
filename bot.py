@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.3 — FINAL (Multi-position + Risk % Lot Sizing)
+# EngulfingTrend Bot v5.4 — FINAL (Historical Preload + Configurable Risk%)
 # ============================================================
 import os
 import asyncio
@@ -28,11 +28,12 @@ CONFIG = {
     'TESTNET':    os.getenv('TESTNET', 'True') == 'True',
     'SYMBOLS':    os.getenv('SYMBOLS', 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT').split(','),
     'INTERVAL':   os.getenv('INTERVAL', '5m'),
-    'BALANCE':    1000.0,
-    'RISK_PCT':   0.05,
-    'LOT_MIN':    0.001,
-    'LOT_MAX':    2.0,
-    'MAX_OPEN_POS': 5,     # har symbol uchun bir vaqtda ochiq bo'lishi mumkin bo'lgan max pozitsiya soni
+    'BALANCE':    float(os.getenv('BALANCE', '1000')),
+    'RISK_PCT':   float(os.getenv('RISK_PCT', '0.05')),      # endi .env / Railway Variables orqali sozlanadi
+    'LOT_MIN':    float(os.getenv('LOT_MIN', '0.001')),
+    'LOT_MAX':    float(os.getenv('LOT_MAX', '2.0')),
+    'MAX_OPEN_POS': int(os.getenv('MAX_OPEN_POS', '5')),
+    'PRELOAD_CANDLES': int(os.getenv('PRELOAD_CANDLES', '100')),  # startup'da oldindan yuklanadigan candle soni
     'SL_BUF':     10,
     'BE_AT_R':    1.0,
     'TRAIL_STEP': 1.0,
@@ -352,12 +353,47 @@ ENGINES = {}
 
 
 # ============================================================
+# TARIXIY CANDLE'LARNI OLDINDAN YUKLASH
+# ============================================================
+async def preload_candles(client, eng, symbol):
+    """
+    Bot ishga tushganda yoki qayta ishga tushganda darhol signal
+    tekshira olishi uchun Binance'dan oxirgi N ta yopilgan candle'ni
+    oldindan yuklab, eng.candles ro'yxatiga joylaydi.
+    """
+    try:
+        klines = await client.get_klines(
+            symbol=symbol,
+            interval=CONFIG['INTERVAL'],
+            limit=CONFIG['PRELOAD_CANDLES']
+        )
+        # Binance klines format: [open_time, open, high, low, close, volume, close_time, ...]
+        # Oxirgi element hali yopilmagan (jonli) candle bo'lishi mumkin, uni tashlab yuboramiz
+        candles = []
+        for k in klines[:-1]:
+            candles.append({
+                'time':   k[0] // 1000,
+                'open':   float(k[1]),
+                'high':   float(k[2]),
+                'low':    float(k[3]),
+                'close':  float(k[4]),
+                'closed': True,
+            })
+        eng.candles = candles
+        log.info(f"📥 {symbol}: {len(candles)} ta tarixiy candle yuklandi")
+    except Exception as e:
+        log.error(f"{symbol} preload xato: {e}")
+
+
+# ============================================================
 # WORKER (BinanceSocketManager bilan — async, barqaror)
 # ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
     ENGINES[symbol] = eng
     log.info(f"🔵 {symbol} worker boshlandi")
+
+    await preload_candles(client, eng, symbol)
 
     bsm = BinanceSocketManager(client)
 
@@ -382,7 +418,11 @@ async def worker(client, symbol):
                     }
 
                     if candle['closed']:
-                        eng.candles.append(candle)
+                        # Agar preload'dan kelgan oxirgi candle bilan bir xil vaqt bo'lsa, dublikat qo'shmaslik
+                        if eng.candles and eng.candles[-1]['time'] == candle['time']:
+                            eng.candles[-1] = candle
+                        else:
+                            eng.candles.append(candle)
                         if len(eng.candles) > 200: eng.candles.pop(0)
 
                         idx = len(eng.candles) - 1
@@ -457,13 +497,14 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.3 ishga tushdi")
+    log.info("🚀 Bot v5.4 ishga tushdi")
     log.info(f"Symbols: {CONFIG['SYMBOLS']}")
     log.info(f"TF: {CONFIG['INTERVAL']} | TESTNET: {CONFIG['TESTNET']}")
     log.info(f"Risk/trade: {CONFIG['RISK_PCT']*100:.1f}% | Max pozitsiya: {CONFIG['MAX_OPEN_POS']} | Komissiya: {CONFIG['COMM_RATE']*100:.2f}%")
+    log.info(f"Preload candles: {CONFIG['PRELOAD_CANDLES']}")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.3</b>\n"
+        f"🚀 <b>Engulfing Bot v5.4</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Symbols: <b>{', '.join(CONFIG['SYMBOLS'])}</b>\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
@@ -471,6 +512,7 @@ async def main():
         f"⚖️ Risk/trade: {CONFIG['RISK_PCT']*100:.1f}%\n"
         f"📂 Max pozitsiya (symbolga): {CONFIG['MAX_OPEN_POS']}\n"
         f"💰 Komissiya: {CONFIG['COMM_RATE']*100:.2f}%\n"
+        f"📥 Preload: {CONFIG['PRELOAD_CANDLES']} candle\n"
         f"💵 Balans: $1000 × {len(CONFIG['SYMBOLS'])}\n"
         f"✅ Bot aktiv"
     )
