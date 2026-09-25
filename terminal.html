@@ -130,6 +130,10 @@ font-size:12px;font-weight:600;cursor:pointer;margin-top:10px}
   <div class="chip active" data-tf="15m" onclick="setTF(this,'15m')">M15</div>
   <div class="chip" data-tf="1h" onclick="setTF(this,'1h')">H1</div>
   <div class="chip" data-tf="4h" onclick="setTF(this,'4h')">H4</div>
+  <div class="div"></div>
+  <div class="chip" data-mo="1" onclick="setMonths(this,1)">1oy</div>
+  <div class="chip" data-mo="3" onclick="setMonths(this,3)">3oy</div>
+  <div class="chip active" data-mo="6" onclick="setMonths(this,6)">6oy</div>
 </div>
 
 <div id="chart">
@@ -179,12 +183,10 @@ font-size:12px;font-weight:600;cursor:pointer;margin-top:10px}
 </div>
 
 <script>
-// ============================================================
-// KONFIGURATSIYA
-// ============================================================
 const CFG = {
   symbol: 'BTCUSDT',
   interval: '15m',
+  historyMonths: 6,
   limit: 1000,
   postLossRisk: 0.5,
   postWinRisk: 1.2,
@@ -201,9 +203,6 @@ function useTrend(){ return document.getElementById('trendFilter').checked; }
 
 let chart, candleSeries;
 
-// ============================================================
-// CHART YARATISH
-// ============================================================
 function initChart(){
   const el = document.getElementById('chart');
   chart = LightweightCharts.createChart(el, {
@@ -224,9 +223,54 @@ function initChart(){
   window.addEventListener('resize', ()=>chart.applyOptions({width:el.clientWidth,height:el.clientHeight}));
 }
 
-// ============================================================
-// MA'LUMOT YUKLASH
-// ============================================================
+// Binance bir so'rovda max 1000 sham beradi - kerakli davrni "sahifalab" to'liq yig'amiz
+async function fetchAllCandles(symbol, interval, monthsBack){
+  const now = Date.now();
+  let curStart = now - monthsBack * 30 * 24 * 60 * 60 * 1000;
+  const limit = 1000;
+  let all = [];
+  let guard = 0;
+  const maxRequests = 300;
+
+  while(curStart < now && guard < maxRequests){
+    guard++;
+    const url = 'https://api.binance.com/api/v3/klines?symbol=' + symbol +
+                '&interval=' + interval + '&startTime=' + curStart + '&limit=' + limit;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const raw = await res.json();
+    if(!raw.length) break;
+
+    const mapped = raw.map(d=>({
+      time: Math.floor(d[0]/1000),
+      open: parseFloat(d[1]),
+      high: parseFloat(d[2]),
+      low: parseFloat(d[3]),
+      close: parseFloat(d[4])
+    }));
+    all = all.concat(mapped);
+
+    const loadingEl = document.getElementById('loading');
+    if(loadingEl) loadingEl.innerHTML = '<div class="spinner"></div><span>Yuklanmoqda... ' + all.length + ' sham (' + guard + '-so\'rov)</span>';
+
+    const lastMs = raw[raw.length - 1][0];
+    curStart = lastMs + 1;
+    if(raw.length < limit) break;
+  }
+
+  const seen = new Set();
+  const dedup = [];
+  for(const c of all){ if(!seen.has(c.time)){ seen.add(c.time); dedup.push(c); } }
+  return dedup;
+}
+
+function setMonths(el, months){
+  document.querySelectorAll('[data-mo]').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  CFG.historyMonths = months;
+  loadData();
+}
+
 async function loadData(){
   const loading = document.getElementById('loading');
   const status = document.getElementById('status');
@@ -236,19 +280,8 @@ async function loadData(){
   status.className = 'status';
 
   try{
-    const url = 'https://api.binance.com/api/v3/klines?symbol=' + CFG.symbol +
-                '&interval=' + CFG.interval + '&limit=' + CFG.limit;
-    const res = await fetch(url);
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const raw = await res.json();
-
-    const candles = raw.map(d=>({
-      time: Math.floor(d[0]/1000),
-      open: parseFloat(d[1]),
-      high: parseFloat(d[2]),
-      low: parseFloat(d[3]),
-      close: parseFloat(d[4])
-    }));
+    const candles = await fetchAllCandles(CFG.symbol, CFG.interval, CFG.historyMonths);
+    if(candles.length === 0) throw new Error('Ma\'lumot topilmadi');
 
     candleSeries.setData(candles);
 
@@ -278,9 +311,6 @@ async function loadData(){
   }
 }
 
-// ============================================================
-// SIGNAL — TOZA 2-SVECHALI ENGULFING (hech qanday indikator/breakout shart emas)
-// ============================================================
 function isBullishEngulfing(prev, cur){
   const prevBearish = prev.close < prev.open;
   const curBullish  = cur.close  > cur.open;
@@ -295,9 +325,6 @@ function isBearishEngulfing(prev, cur){
   return prevBullish && curBearish && bodyEngulf;
 }
 
-// ============================================================
-// TREND — ixtiyoriy filtr, o'chiq bo'lsa umuman chaqirilmaydi
-// ============================================================
 function detectTrend(candles, idx){
   if(idx < 20) return 0;
   let sumHigh = 0, sumLow = 0;
@@ -312,9 +339,6 @@ function detectTrend(candles, idx){
   return 0;
 }
 
-// ============================================================
-// ASOSIY LOGIKA
-// ============================================================
 function findTrades(candles){
   const trades = [];
   const startBalance = getBalance();
@@ -520,4 +544,4 @@ window.addEventListener('DOMContentLoaded', ()=>{
 });
 </script>
 </body>
-</html>
+  </html>
