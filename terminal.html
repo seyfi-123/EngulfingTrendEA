@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Engulfing · Flat PA</title>
+<title>Engulfing · Flat Type 2</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,sans-serif}
@@ -43,11 +43,12 @@ body{background:#0a0b0f;color:#e2e8f0}
 .li .rr{text-align:right;font-weight:700}
 .li .rr.w{color:#6ee7b7}.li .rr.l{color:#fca5a5}.li .rr.be{color:#fbbf24}
 .lot-badge{display:inline-block;background:#334155;color:#e2e8f0;padding:1px 4px;border-radius:3px;font-size:8px;margin-left:3px}
+.t2-badge{display:inline-block;background:#fbbf2433;color:#fbbf24;padding:1px 4px;border-radius:3px;font-size:8px;margin-left:3px}
 </style>
 </head>
 <body>
 
-<div class="h"><b>🎯 Engulfing · Flat PA</b><div class="st" id="st">...</div></div>
+<div class="h"><b>🎯 Engulfing · Flat Type 2</b><div class="st" id="st">...</div></div>
 
 <div class="c">
 <div class="b on" onclick="S(this,'s','BTCUSDT')">BTC</div>
@@ -80,8 +81,9 @@ body{background:#0a0b0f;color:#e2e8f0}
 <span>Lot start:</span><input type="number" id="lotStart" value="0.05" step="0.01" onchange="load()">
 <span>Lot cap:</span><input type="number" id="lotCap" value="0.50" step="0.05" onchange="load()">
 <span>Flat%:</span><input type="number" id="flatPct" value="1.5" step="0.1" onchange="load()">
+<span>Compress:</span><input type="number" id="compressPct" value="0.05" step="0.01" onchange="load()">
 </div>
-<div class="hd"><span>📋 Savdolar (Flat + Structure + Engulfing)</span><span id="lc">0</span></div>
+<div class="hd"><span>📋 Savdolar · Flat Type 2 (Compression)</span><span id="lc">0</span></div>
 <div class="lst" id="lst"><div style="padding:20px;text-align:center;color:#94a3b8">Kutilmoqda...</div></div>
 </div>
 
@@ -96,8 +98,9 @@ function getSLBuf(){ return parseFloat(document.getElementById('slBufInput').val
 function getLotStart(){ return parseFloat(document.getElementById('lotStart').value) || 0.05; }
 function getLotCap(){ return parseFloat(document.getElementById('lotCap').value) || 0.50; }
 function getFlatPct(){ return parseFloat(document.getElementById('flatPct').value) / 100 || 0.015; }
+function getCompressPct(){ return parseFloat(document.getElementById('compressPct').value) / 100 || 0.0005; }
 
-let chart, series, flatLine;
+let chart, series;
 
 function S(el, type, val){
   el.parentNode.querySelectorAll('.b').forEach(b => b.classList.remove('on'));
@@ -155,13 +158,13 @@ async function fetchCandles(){
 }
 
 // ============================================================
-// FLAT ZONE DETECTION — Pure Price Action
+// FLAT ZONE CLASSIFIER — Type 1 (Stagnant) vs Type 2 (Compression)
 // ============================================================
-// Flat = oxirgi 30 sham range < X% narx
-function isFlatZone(cd, idx){
+function classifyFlat(cd, idx){
   const lookback = 30;
-  if(idx < lookback) return false;
+  if(idx < lookback * 2) return 'none';
 
+  // ===== 1. FLAT RANGE tekshiruvi =====
   let hi = -Infinity, lo = Infinity;
   for(let i = idx - lookback + 1; i <= idx; i++){
     hi = Math.max(hi, cd[i].high);
@@ -171,43 +174,71 @@ function isFlatZone(cd, idx){
   const price = cd[idx].close;
   const pct = range / price;
 
-  return pct < getFlatPct();  // Flat agar range kichik bo'lsa
-}
+  if(pct > getFlatPct()) return 'none';  // Flat emas
 
-// ============================================================
-// MARKET STRUCTURE — Local Swing High/Low
-// ============================================================
-function findSwingHigh(cd, from, to){
-  let h = -Infinity, idx = -1;
-  for(let i = from; i <= to && i < cd.length; i++){
-    if(cd[i].high > h){ h = cd[i].high; idx = i; }
-  }
-  return { value: h, idx };
-}
-function findSwingLow(cd, from, to){
-  let l = Infinity, idx = -1;
-  for(let i = from; i <= to && i < cd.length; i++){
-    if(cd[i].low < l){ l = cd[i].low; idx = i; }
-  }
-  return { value: l, idx };
-}
+  // ===== 2. SWING HIGH/LOW aniqlash (flat ichida) =====
+  const swingHighs = [];
+  const swingLows = [];
 
-// Structure break: narx oldingi swing high/low ni buzdi
-function structureBreak(cd, idx, type){
-  const lookback = 20;
-  if(idx < lookback * 2) return false;
-
-  if(type === 'bull'){
-    // Oldingi swing high (idx-20 dan idx-5 gacha)
-    const prevHigh = findSwingHigh(cd, idx - lookback, idx - 5);
-    if(prevHigh.value === -Infinity) return false;
-    // Hozirgi sham uning yuqorisini buzdi
-    return cd[idx].close > prevHigh.value;
-  } else {
-    const prevLow = findSwingLow(cd, idx - lookback, idx - 5);
-    if(prevLow.value === Infinity) return false;
-    return cd[idx].close < prevLow.value;
+  // 3-shamli swing: o'rtadagi eng yuqori/past
+  for(let i = idx - lookback + 2; i < idx; i++){
+    // Swing High: high[i] > high[i-1] && high[i] > high[i+1]
+    if(cd[i].high > cd[i-1].high && cd[i].high > cd[i+1].high){
+      swingHighs.push({ value: cd[i].high, idx: i });
+    }
+    // Swing Low
+    if(cd[i].low < cd[i-1].low && cd[i].low < cd[i+1].low){
+      swingLows.push({ value: cd[i].low, idx: i });
+    }
   }
+
+  // ===== 3. TYPE 1 vs TYPE 2 =====
+  // Type 2 (Compression): swing high/lar PROGRESSIVELY OSHSIN yoki low'lar PROGRESSIVELY PASAYSIN
+  const tol = getCompressPct();
+
+  let progressiveHigh = false;
+  let progressiveLow = false;
+
+  // Oxirgi 3 ta swing high'ni tekshirish — HH
+  if(swingHighs.length >= 3){
+    const h1 = swingHighs[swingHighs.length - 3].value;
+    const h2 = swingHighs[swingHighs.length - 2].value;
+    const h3 = swingHighs[swingHighs.length - 1].value;
+    // h1 < h2 < h3 (yoki h1 < h3)
+    if(h2 > h1 * (1 + tol) && h3 > h2 * (1 + tol)){
+      progressiveHigh = true;
+    }
+  } else if(swingHighs.length >= 2){
+    const h1 = swingHighs[swingHighs.length - 2].value;
+    const h2 = swingHighs[swingHighs.length - 1].value;
+    if(h2 > h1 * (1 + tol)) progressiveHigh = true;
+  }
+
+  // Oxirgi 3 ta swing low — LL
+  if(swingLows.length >= 3){
+    const l1 = swingLows[swingLows.length - 3].value;
+    const l2 = swingLows[swingLows.length - 2].value;
+    const l3 = swingLows[swingLows.length - 1].value;
+    if(l2 < l1 * (1 - tol) && l3 < l2 * (1 - tol)){
+      progressiveLow = true;
+    }
+  } else if(swingLows.length >= 2){
+    const l1 = swingLows[swingLows.length - 2].value;
+    const l2 = swingLows[swingLows.length - 1].value;
+    if(l2 < l1 * (1 - tol)) progressiveLow = true;
+  }
+
+  // Type 2: compression flat
+  if(progressiveHigh || progressiveLow){
+    return {
+      type: 'type2',
+      bullishCompression: progressiveHigh,
+      bearishCompression: progressiveLow
+    };
+  }
+
+  // Type 1: stagnant
+  return { type: 'type1' };
 }
 
 // ============================================================
@@ -232,7 +263,7 @@ function isBear(p2, p1, c){
 }
 
 // ============================================================
-// DINAMIK LOT — 0.05 → 0.50
+// DINAMIK LOT
 // ============================================================
 function getDynamicLot(wins){
   const start = getLotStart();
@@ -254,13 +285,14 @@ function calcTrades(cd){
   let wins = 0;
   let losses = 0;
   let bes = 0;
+  let type2Count = 0;
+  let type1Count = 0;
 
   for(let i = 5; i < cd.length; i++){
     const c = cd[i];
 
     // ===== POZITSIYA BOSHQARUVI =====
     if(pos){
-      // SL tegilganini tekshirish
       let exit = 0, exitR = 0, closed = false;
       if(pos.type === 'B' && c.low <= pos.sl){
         exit = pos.sl;
@@ -283,7 +315,7 @@ function calcTrades(cd){
         trades.push(pos);
         pos = null;
       } else {
-        // Trailing stop yangilash
+        // Multi-stage trailing
         let maxR;
         if(pos.type === 'B') maxR = (c.high - pos.entry) / pos.slDist;
         else maxR = (pos.entry - c.low) / pos.slDist;
@@ -304,33 +336,42 @@ function calcTrades(cd){
 
     if(pos) continue;
 
-    // ===== FLAT ZONE TEKSHIRUVI =====
+    // ===== FLAT CLASSIFY =====
     const idx = i - 1;
-    if(!isFlatZone(cd, idx)) continue;
+    const flat = classifyFlat(cd, idx);
+    if(flat === 'none') continue;
+
+    // Type 1 → SKIP (stagnant)
+    if(flat.type === 'type1'){
+      type1Count++;
+      continue;
+    }
+
+    // Type 2 → TRADE
+    type2Count++;
 
     const cl = cd[idx];
     const p1 = cd[idx - 1];
     const p2 = cd[idx - 2];
     if(!cl || !p1 || !p2) continue;
 
-    // ===== ENGULFING + STRUCTURE BREAK =====
     let type = null;
 
-    // BUY: 2-candle engulfing + Bullish structure break (HH)
-    if(isBull(p2, p1, cl) && structureBreak(cd, idx, 'bull')){
+    // BUY: bullish compression + bull engulfing
+    if(flat.bullishCompression && isBull(p2, p1, cl)){
       type = 'B';
     }
-    // SELL: 2-candle engulfing + Bearish structure break (LL)
-    else if(isBear(p2, p1, cl) && structureBreak(cd, idx, 'bear')){
+    // SELL: bearish compression + bear engulfing
+    else if(flat.bearishCompression && isBear(p2, p1, cl)){
       type = 'S';
     }
 
     if(!type) continue;
 
-    // SL: 2 shamning ekstremumi
+    // SL
     let slPrice, slDist;
     if(type === 'B'){
-      slPrice = Math.min(p1.low, p2.low) - buf * (cl.close / 100000);  // Dynamic buffer
+      slPrice = Math.min(p1.low, p2.low) - buf * (cl.close / 100000);
       slDist = cl.close - slPrice;
     } else {
       slPrice = Math.max(p1.high, p2.high) + buf * (cl.close / 100000);
@@ -338,7 +379,6 @@ function calcTrades(cd){
     }
     if(slDist <= 0) continue;
 
-    // Dinamik lot
     const lot = getDynamicLot(wins);
     const riskPerR = lot * 100;
 
@@ -351,11 +391,11 @@ function calcTrades(cd){
       slDist,
       lot,
       riskPerR,
-      inFlat: true
+      flatType: 2
     };
   }
 
-  // Oxirgi ochiq pozitsiya
+  // Oxirgi ochiq
   if(pos){
     const last = cd[cd.length - 1];
     const exit = last.close;
@@ -372,7 +412,7 @@ function calcTrades(cd){
     trades.push(pos);
   }
 
-  return { trades, wins, losses, bes, finalBal: bal };
+  return { trades, wins, losses, bes, finalBal: bal, type1Count, type2Count };
 }
 
 // ============================================================
@@ -409,7 +449,7 @@ function stats(result){
 
   const L = document.getElementById('lst');
   if(!trades.length){
-    L.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8">Flat + Engulfing signal yo\'q</div>';
+    L.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8">Flat Type 2 signal yo\'q<br><span style="font-size:9px;color:#64748b">Type 1 bloklandi</span></div>';
     return;
   }
 
@@ -426,7 +466,7 @@ function stats(result){
     return `<div class="li">
       <span class="t">${ts}</span>
       <span class="sb ${t.type === 'B' ? 'b' : 's'}">${t.type === 'B' ? 'BUY' : 'SELL'}</span>
-      <span class="p">@${fmt(t.entry)}<span class="lot-badge">${t.lot.toFixed(2)}</span>${rTxt}</span>
+      <span class="p">@${fmt(t.entry)}<span class="lot-badge">${t.lot.toFixed(2)}</span><span class="t2-badge">T2</span>${rTxt}</span>
       <span class="rr ${rc}">${rt}</span>
     </div>`;
   }).join('');
@@ -449,7 +489,6 @@ async function load(){
 
     const result = calcTrades(cd);
 
-    // Flat zone markerlari
     const markers = result.trades.map(t => ({
       time: t.time,
       position: t.type === 'B' ? 'belowBar' : 'aboveBar',
@@ -462,7 +501,7 @@ async function load(){
     stats(result);
     chart.timeScale().fitContent();
     ld.classList.add('x');
-    st.textContent = '✅ ' + CFG.sym + ' ' + CFG.tf + ' · ' + result.trades.length + ' savdo';
+    st.textContent = '✅ ' + CFG.sym + ' ' + CFG.tf + ' · T2: ' + result.type2Count + ' · T1 bloklandi: ' + result.type1Count + ' · Savdo: ' + result.trades.length;
   } catch(e){
     ld.textContent = '⚠️ ' + e.message;
     st.textContent = 'Xato';
