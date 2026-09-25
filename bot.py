@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.0 — FINAL (Tuzatilgan)
+# EngulfingTrend Bot v5.0 — FINAL (ThreadedWebsocketManager)
 # ============================================================
 import os
 import asyncio
@@ -8,7 +8,7 @@ import time
 import io
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from binance import AsyncClient, BinanceSocketManager
+from binance import AsyncClient, ThreadedWebsocketManager
 from binance.enums import SIDE_BUY, SIDE_SELL, ORDER_TYPE_MARKET
 from telegram import Bot, InputFile
 from telegram.constants import ParseMode
@@ -238,7 +238,6 @@ class Engine:
         if not p: return
 
         try:
-            # ✅ side ni to'g'ri aniqlash
             side = SIDE_BUY if signal['type'] == 'B' else SIDE_SELL
             order = await client.create_order(
                 symbol=self.symbol, side=side,
@@ -255,7 +254,6 @@ class Engine:
             self.pos = p
             log.info(f"✅ {self.symbol} {signal['type']} @ ${fill}")
 
-            # ✅ Xabar uchun 'B' -> 'BUY', 'S' -> 'SELL'
             action = "BUY" if signal['type'] == 'B' else "SELL"
             emoji = "🟢" if signal['type'] == 'B' else "🔴"
             await tg.send(
@@ -282,7 +280,6 @@ class Engine:
         if not p: return
 
         try:
-            # ✅ side ni to'g'ri aniqlash
             side = SIDE_SELL if p['type'] == 'B' else SIDE_BUY
             await client.create_order(
                 symbol=self.symbol, side=side,
@@ -339,45 +336,61 @@ ENGINES = {}
 
 
 # ============================================================
-# WORKER
+# WORKER (ThreadedWebsocketManager bilan)
 # ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
     ENGINES[symbol] = eng
     log.info(f"🔵 {symbol} worker boshlandi")
 
-    while True:
+    twm = ThreadedWebsocketManager(
+        api_key=CONFIG['API_KEY'],
+        api_secret=CONFIG['API_SECRET'],
+        testnet=CONFIG['TESTNET']
+    )
+
+    def handle_kline(msg):
         try:
-            # ✅ Har safar yangi socket yaratish (qayta ulanish uchun)
-            bsm = BinanceSocketManager(client)
-            sock = bsm.kline_socket(symbol, interval=CONFIG['INTERVAL'])
-            async with sock as stream:
-                async for msg in stream:
-                    if msg.get('e') != 'kline': continue
-                    k = msg['k']
-                    candle = {
-                        'time':   k['t'] // 1000,
-                        'open':   float(k['o']),
-                        'high':   float(k['h']),
-                        'low':    float(k['l']),
-                        'close':  float(k['c']),
-                        'closed': k['x'],
-                    }
-                    if candle['closed']:
-                        eng.candles.append(candle)
-                        if len(eng.candles) > 200: eng.candles.pop(0)
-                        if not eng.pos:
-                            idx = len(eng.candles) - 1
-                            sig = eng.checkEngulfing(eng.candles, idx)
-                            if sig:
-                                await eng.openReal(client, sig, candle)
-                    if eng.pos:
-                        closed = eng.manageLocal(eng.pos, candle)
-                        if closed:
-                            await eng.closeReal(client)
+            loop = asyncio.get_event_loop()
+            asyncio.run_coroutine_threadsafe(
+                process_kline(client, eng, msg), loop
+            )
         except Exception as e:
-            log.error(f"{symbol} WS xato: {e} — 5s kutish")
-            await asyncio.sleep(5)
+            log.error(f"{symbol} callback xato: {e}")
+
+    async def process_kline(client, eng, msg):
+        if msg.get('e') != 'kline': return
+        k = msg['k']
+        candle = {
+            'time':   k['t'] // 1000,
+            'open':   float(k['o']),
+            'high':   float(k['h']),
+            'low':    float(k['l']),
+            'close':  float(k['c']),
+            'closed': k['x'],
+        }
+        if candle['closed']:
+            eng.candles.append(candle)
+            if len(eng.candles) > 200: eng.candles.pop(0)
+            if not eng.pos:
+                idx = len(eng.candles) - 1
+                sig = eng.checkEngulfing(eng.candles, idx)
+                if sig:
+                    await eng.openReal(client, sig, candle)
+        if eng.pos:
+            closed = eng.manageLocal(eng.pos, candle)
+            if closed:
+                await eng.closeReal(client)
+
+    twm.start()
+    twm.start_kline_socket(
+        callback=handle_kline,
+        symbol=symbol,
+        interval=CONFIG['INTERVAL']
+    )
+
+    while True:
+        await asyncio.sleep(60)
 
 
 # ============================================================
@@ -385,7 +398,6 @@ async def worker(client, symbol):
 # ============================================================
 async def daily_report():
     while True:
-        # ✅ UTC vaqtni to'g'ri olish
         now = datetime.now(timezone.utc)
         if now.hour == CONFIG['REPORT_HOUR'] and now.minute < 1:
             log.info("📊 Kunlik hisobot yuborilmoqda...")
