@@ -6,7 +6,7 @@ import os
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone  # <--- ИСЛОҲ 1: timezone илова шуд
 from dotenv import load_dotenv
 from binance import AsyncClient, BinanceSocketManager
 from binance.enums import SIDE_BUY, SIDE_SELL, ORDER_TYPE_MARKET
@@ -94,7 +94,8 @@ class TradeEngine:
         self.last_trade_time = 0
         self.consec_losses = 0
         self.daily_start_balance = 1000.0
-        self.daily_date = datetime.utcnow().date()
+        # ИСЛОҲ 2: utcnow() ба now(timezone.utc) иваз шуд
+        self.daily_date = datetime.now(timezone.utc).date()
         self.paused_until = 0
 
     def update_lot(self):
@@ -103,7 +104,8 @@ class TradeEngine:
         self.current_lot = min(CONFIG['LOT_START'] + bonus, CONFIG['LOT_CAP'])
 
     def check_daily_loss(self):
-        today = datetime.utcnow().date()
+        # ИСЛОҲ 3: utcnow() ба now(timezone.utc) иваз шуд
+        today = datetime.now(timezone.utc).date()
         if today != self.daily_date:
             self.daily_date = today
             self.daily_start_balance = self.balance
@@ -381,8 +383,10 @@ async def main():
 
     socket = bsm.kline_socket(CONFIG['SYMBOL'], interval=CONFIG['INTERVAL'])
 
+    # ИСЛОҲ 4: Давраи сокет ислоҳ шуд
     async with socket as stream:
-        async for msg in stream:
+        while True:
+            msg = await stream.recv()
             if msg.get('e') != 'kline':
                 continue
             k = msg['k']
