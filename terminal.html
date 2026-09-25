@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Engulfing · Flat Type 2</title>
+<title>Engulfing · Aggressive</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,sans-serif}
@@ -43,12 +43,12 @@ body{background:#0a0b0f;color:#e2e8f0}
 .li .rr{text-align:right;font-weight:700}
 .li .rr.w{color:#6ee7b7}.li .rr.l{color:#fca5a5}.li .rr.be{color:#fbbf24}
 .lot-badge{display:inline-block;background:#334155;color:#e2e8f0;padding:1px 4px;border-radius:3px;font-size:8px;margin-left:3px}
-.t2-badge{display:inline-block;background:#fbbf2433;color:#fbbf24;padding:1px 4px;border-radius:3px;font-size:8px;margin-left:3px}
+.eng-badge{display:inline-block;background:#3b82f633;color:#93c5fd;padding:1px 4px;border-radius:3px;font-size:8px;margin-left:3px}
 </style>
 </head>
 <body>
 
-<div class="h"><b>🎯 Engulfing · Flat Type 2</b><div class="st" id="st">...</div></div>
+<div class="h"><b>🎯 Engulfing · Aggressive</b><div class="st" id="st">...</div></div>
 
 <div class="c">
 <div class="b on" onclick="S(this,'s','BTCUSDT')">BTC</div>
@@ -59,7 +59,6 @@ body{background:#0a0b0f;color:#e2e8f0}
 <div class="b on" onclick="S(this,'t','5m')">M5</div>
 <div class="b" onclick="S(this,'t','15m')">M15</div>
 <div class="b" onclick="S(this,'t','1h')">H1</div>
-<div class="b" onclick="S(this,'t','4h')">H4</div>
 </div>
 
 <div id="ch"><div class="ld" id="ld">Yuklanmoqda...</div></div>
@@ -80,10 +79,8 @@ body{background:#0a0b0f;color:#e2e8f0}
 <span>SLbuf:</span><input type="number" id="slBufInput" value="10" step="5" onchange="load()">
 <span>Lot start:</span><input type="number" id="lotStart" value="0.05" step="0.01" onchange="load()">
 <span>Lot cap:</span><input type="number" id="lotCap" value="0.50" step="0.05" onchange="load()">
-<span>Flat%:</span><input type="number" id="flatPct" value="1.5" step="0.1" onchange="load()">
-<span>Compress:</span><input type="number" id="compressPct" value="0.05" step="0.01" onchange="load()">
 </div>
-<div class="hd"><span>📋 Savdolar · Flat Type 2 (Compression)</span><span id="lc">0</span></div>
+<div class="hd"><span>📋 Savdolar · Zero Filter</span><span id="lc">0</span></div>
 <div class="lst" id="lst"><div style="padding:20px;text-align:center;color:#94a3b8">Kutilmoqda...</div></div>
 </div>
 
@@ -97,8 +94,6 @@ function getBal(){ return parseFloat(document.getElementById('balInput').value) 
 function getSLBuf(){ return parseFloat(document.getElementById('slBufInput').value) || 10; }
 function getLotStart(){ return parseFloat(document.getElementById('lotStart').value) || 0.05; }
 function getLotCap(){ return parseFloat(document.getElementById('lotCap').value) || 0.50; }
-function getFlatPct(){ return parseFloat(document.getElementById('flatPct').value) / 100 || 0.015; }
-function getCompressPct(){ return parseFloat(document.getElementById('compressPct').value) / 100 || 0.0005; }
 
 let chart, series;
 
@@ -158,265 +153,214 @@ async function fetchCandles(){
 }
 
 // ============================================================
-// FLAT ZONE CLASSIFIER — Type 1 (Stagnant) vs Type 2 (Compression)
+// TRADE ENGINE CLASS
 // ============================================================
-function classifyFlat(cd, idx){
-  const lookback = 30;
-  if(idx < lookback * 2) return 'none';
-
-  // ===== 1. FLAT RANGE tekshiruvi =====
-  let hi = -Infinity, lo = Infinity;
-  for(let i = idx - lookback + 1; i <= idx; i++){
-    hi = Math.max(hi, cd[i].high);
-    lo = Math.min(lo, cd[i].low);
-  }
-  const range = hi - lo;
-  const price = cd[idx].close;
-  const pct = range / price;
-
-  if(pct > getFlatPct()) return 'none';  // Flat emas
-
-  // ===== 2. SWING HIGH/LOW aniqlash (flat ichida) =====
-  const swingHighs = [];
-  const swingLows = [];
-
-  // 3-shamli swing: o'rtadagi eng yuqori/past
-  for(let i = idx - lookback + 2; i < idx; i++){
-    // Swing High: high[i] > high[i-1] && high[i] > high[i+1]
-    if(cd[i].high > cd[i-1].high && cd[i].high > cd[i+1].high){
-      swingHighs.push({ value: cd[i].high, idx: i });
-    }
-    // Swing Low
-    if(cd[i].low < cd[i-1].low && cd[i].low < cd[i+1].low){
-      swingLows.push({ value: cd[i].low, idx: i });
-    }
+class TradeEngine {
+  constructor(initialBalance, lotStart, lotCap, slBuf){
+    this.balance = initialBalance;
+    this.initialBalance = initialBalance;
+    this.lotStart = lotStart;
+    this.lotCap = lotCap;
+    this.slBuf = slBuf;
+    this.currentLot = lotStart;
+    this.completedTrades = 0;
+    this.trades = [];
+    this.pos = null;
+    this.wins = 0;
+    this.losses = 0;
+    this.bes = 0;
   }
 
-  // ===== 3. TYPE 1 vs TYPE 2 =====
-  // Type 2 (Compression): swing high/lar PROGRESSIVELY OSHSIN yoki low'lar PROGRESSIVELY PASAYSIN
-  const tol = getCompressPct();
-
-  let progressiveHigh = false;
-  let progressiveLow = false;
-
-  // Oxirgi 3 ta swing high'ni tekshirish — HH
-  if(swingHighs.length >= 3){
-    const h1 = swingHighs[swingHighs.length - 3].value;
-    const h2 = swingHighs[swingHighs.length - 2].value;
-    const h3 = swingHighs[swingHighs.length - 1].value;
-    // h1 < h2 < h3 (yoki h1 < h3)
-    if(h2 > h1 * (1 + tol) && h3 > h2 * (1 + tol)){
-      progressiveHigh = true;
-    }
-  } else if(swingHighs.length >= 2){
-    const h1 = swingHighs[swingHighs.length - 2].value;
-    const h2 = swingHighs[swingHighs.length - 1].value;
-    if(h2 > h1 * (1 + tol)) progressiveHigh = true;
+  // Lot scaling: 0.05 → 0.10 (10 wins) → 0.15 (20) → ... → 0.50 cap
+  updateLot(){
+    const bonus = Math.floor(this.completedTrades / 10) * 0.05;
+    this.currentLot = Math.min(this.lotStart + bonus, this.lotCap);
   }
 
-  // Oxirgi 3 ta swing low — LL
-  if(swingLows.length >= 3){
-    const l1 = swingLows[swingLows.length - 3].value;
-    const l2 = swingLows[swingLows.length - 2].value;
-    const l3 = swingLows[swingLows.length - 1].value;
-    if(l2 < l1 * (1 - tol) && l3 < l2 * (1 - tol)){
-      progressiveLow = true;
-    }
-  } else if(swingLows.length >= 2){
-    const l1 = swingLows[swingLows.length - 2].value;
-    const l2 = swingLows[swingLows.length - 1].value;
-    if(l2 < l1 * (1 - tol)) progressiveLow = true;
-  }
-
-  // Type 2: compression flat
-  if(progressiveHigh || progressiveLow){
-    return {
-      type: 'type2',
-      bullishCompression: progressiveHigh,
-      bearishCompression: progressiveLow
-    };
-  }
-
-  // Type 1: stagnant
-  return { type: 'type1' };
-}
-
-// ============================================================
-// 2-CANDLE ENGULFING
-// ============================================================
-function isBull(p2, p1, c){
-  if(c.close <= c.open) return false;
-  if(p1.close >= p1.open) return false;
-  if(p2.close >= p2.open) return false;
-  const maxHigh = Math.max(p1.high, p2.high);
-  const minLow  = Math.min(p1.low, p2.low);
-  return c.low <= minLow && c.close > maxHigh;
-}
-
-function isBear(p2, p1, c){
-  if(c.close >= c.open) return false;
-  if(p1.close <= p1.open) return false;
-  if(p2.close <= p2.open) return false;
-  const maxHigh = Math.max(p1.high, p2.high);
-  const minLow  = Math.min(p1.low, p2.low);
-  return c.high >= maxHigh && c.close < minLow;
-}
-
-// ============================================================
-// DINAMIK LOT
-// ============================================================
-function getDynamicLot(wins){
-  const start = getLotStart();
-  const cap = getLotCap();
-  const lot = start + Math.floor(wins / 10) * 0.05;
-  return Math.min(lot, cap);
-}
-
-// ============================================================
-// ASOSIY LOGIKA
-// ============================================================
-function calcTrades(cd){
-  const trades = [];
-  const buf = getSLBuf();
-  const startBal = getBal();
-
-  let bal = startBal;
-  let pos = null;
-  let wins = 0;
-  let losses = 0;
-  let bes = 0;
-  let type2Count = 0;
-  let type1Count = 0;
-
-  for(let i = 5; i < cd.length; i++){
-    const c = cd[i];
-
-    // ===== POZITSIYA BOSHQARUVI =====
-    if(pos){
-      let exit = 0, exitR = 0, closed = false;
-      if(pos.type === 'B' && c.low <= pos.sl){
-        exit = pos.sl;
-        exitR = (exit - pos.entry) / pos.slDist;
-        closed = true;
-      } else if(pos.type === 'S' && c.high >= pos.sl){
-        exit = pos.sl;
-        exitR = (pos.entry - exit) / pos.slDist;
-        closed = true;
-      }
-
-      if(closed){
-        pos.pnl = exitR * pos.riskPerR;
-        pos.exit = exit;
-        pos.exitR = exitR;
-        if(pos.pnl > 0.01){ pos.result = 'W'; wins++; }
-        else if(pos.pnl < -0.01){ pos.result = 'L'; losses++; }
-        else { pos.result = 'BE'; bes++; }
-        bal += pos.pnl;
-        trades.push(pos);
-        pos = null;
-      } else {
-        // Multi-stage trailing
-        let maxR;
-        if(pos.type === 'B') maxR = (c.high - pos.entry) / pos.slDist;
-        else maxR = (pos.entry - c.low) / pos.slDist;
-
-        if(maxR >= 1){
-          const trailR = Math.floor(maxR) - 1;
-          let newSL;
-          if(pos.type === 'B'){
-            newSL = pos.entry + trailR * pos.slDist;
-            if(newSL > pos.sl) pos.sl = newSL;
-          } else {
-            newSL = pos.entry - trailR * pos.slDist;
-            if(newSL < pos.sl) pos.sl = newSL;
-          }
-        }
-      }
-    }
-
-    if(pos) continue;
-
-    // ===== FLAT CLASSIFY =====
-    const idx = i - 1;
-    const flat = classifyFlat(cd, idx);
-    if(flat === 'none') continue;
-
-    // Type 1 → SKIP (stagnant)
-    if(flat.type === 'type1'){
-      type1Count++;
-      continue;
-    }
-
-    // Type 2 → TRADE
-    type2Count++;
-
-    const cl = cd[idx];
+  // ============================================================
+  // SIGNAL DETECTION — 1 OR 2 CANDLE ENGULFING (no filters)
+  // ============================================================
+  checkEngulfing(cd, idx){
+    if(idx < 2) return null;
+    const cur = cd[idx];
     const p1 = cd[idx - 1];
     const p2 = cd[idx - 2];
-    if(!cl || !p1 || !p2) continue;
 
-    let type = null;
+    // --- 1-candle engulfing (cur swallows p1) ---
+    const bull1 = cur.close > cur.open &&
+                  cur.open <= p1.close && cur.close >= p1.open &&
+                  p1.close < p1.open;
+    const bear1 = cur.close < cur.open &&
+                  cur.open >= p1.close && cur.close <= p1.open &&
+                  p1.close > p1.open;
 
-    // BUY: bullish compression + bull engulfing
-    if(flat.bullishCompression && isBull(p2, p1, cl)){
-      type = 'B';
+    // --- 2-candle engulfing (cur swallows p1 + p2) ---
+    const maxHigh2 = Math.max(p1.high, p2.high);
+    const minLow2  = Math.min(p1.low, p2.low);
+    const bull2 = cur.close > cur.open &&
+                  p1.close < p1.open && p2.close < p2.open &&
+                  cur.low <= minLow2 && cur.close > maxHigh2;
+    const bear2 = cur.close < cur.open &&
+                  p1.close > p1.open && p2.close > p2.open &&
+                  cur.high >= maxHigh2 && cur.close < minLow2;
+
+    if(bull1 || bull2) return { type: 'B', candles: bull2 ? 2 : 1 };
+    if(bear1 || bear2) return { type: 'S', candles: bear2 ? 2 : 1 };
+    return null;
+  }
+
+  // ============================================================
+  // MANAGE TRADE — MULTI-STAGE TRAILING
+  // ============================================================
+  manageTrade(candle){
+    const p = this.pos;
+    if(!p) return;
+
+    // --- 1. ESKI SL tegilganmi? ---
+    let exit = 0, exitR = 0, closed = false;
+
+    if(p.type === 'B' && candle.low <= p.sl){
+      exit = p.sl;
+      exitR = (exit - p.entry) / p.slDist;
+      closed = true;
+    } else if(p.type === 'S' && candle.high >= p.sl){
+      exit = p.sl;
+      exitR = (p.entry - exit) / p.slDist;
+      closed = true;
     }
-    // SELL: bearish compression + bear engulfing
-    else if(flat.bearishCompression && isBear(p2, p1, cl)){
-      type = 'S';
+
+    if(closed){
+      p.pnl = exitR * p.riskPerR;
+      p.exit = exit;
+      p.exitR = exitR;
+      if(p.pnl > 0.01){ p.result = 'W'; this.wins++; }
+      else if(p.pnl < -0.01){ p.result = 'L'; this.losses++; }
+      else { p.result = 'BE'; this.bes++; }
+      this.balance += p.pnl;
+      this.completedTrades++;
+      this.trades.push(p);
+      this.pos = null;
+      this.updateLot();
+      return;
     }
 
-    if(!type) continue;
+    // --- 2. TRAILING STOP yangilash ---
+    let maxR;
+    if(p.type === 'B') maxR = (candle.high - p.entry) / p.slDist;
+    else maxR = (p.entry - candle.low) / p.slDist;
 
-    // SL
+    if(maxR >= 1){
+      // 1R → BE (0R), 2R → 1R, 3R → 2R, ...
+      const trailR = Math.floor(maxR) - 1;
+      let newSL;
+      if(p.type === 'B'){
+        newSL = p.entry + trailR * p.slDist;
+        if(newSL > p.sl) p.sl = newSL;
+      } else {
+        newSL = p.entry - trailR * p.slDist;
+        if(newSL < p.sl) p.sl = newSL;
+      }
+    }
+  }
+
+  // ============================================================
+  // OPEN NEW POSITION
+  // ============================================================
+  openTrade(signal, candle){
+    const cur = candle;
+    const buf = this.slBuf * (cur.close / 100000);
+
     let slPrice, slDist;
-    if(type === 'B'){
-      slPrice = Math.min(p1.low, p2.low) - buf * (cl.close / 100000);
-      slDist = cl.close - slPrice;
+    if(signal.type === 'B'){
+      slPrice = cur.low - buf;
+      slDist = cur.close - slPrice;
     } else {
-      slPrice = Math.max(p1.high, p2.high) + buf * (cl.close / 100000);
-      slDist = slPrice - cl.close;
+      slPrice = cur.high + buf;
+      slDist = slPrice - cur.close;
     }
-    if(slDist <= 0) continue;
+    if(slDist <= 0) return;
 
-    const lot = getDynamicLot(wins);
-    const riskPerR = lot * 100;
+    const riskPerR = this.currentLot * 100;
 
-    pos = {
-      time: cl.time,
-      type,
-      entry: cl.close,
+    this.pos = {
+      time: cur.time,
+      type: signal.type,
+      engulfCandles: signal.candles,
+      entry: cur.close,
       sl: slPrice,
       initialSL: slPrice,
       slDist,
-      lot,
-      riskPerR,
-      flatType: 2
+      lot: this.currentLot,
+      riskPerR
     };
   }
 
-  // Oxirgi ochiq
-  if(pos){
-    const last = cd[cd.length - 1];
-    const exit = last.close;
+  // ============================================================
+  // FORCE CLOSE at end of data
+  // ============================================================
+  forceClose(lastCandle){
+    const p = this.pos;
+    if(!p) return;
+    const exit = lastCandle.close;
     let exitR;
-    if(pos.type === 'B') exitR = (exit - pos.entry) / pos.slDist;
-    else exitR = (pos.entry - exit) / pos.slDist;
-    pos.pnl = exitR * pos.riskPerR;
-    pos.exit = exit;
-    pos.exitR = exitR;
-    pos.manualClose = true;
-    if(pos.pnl > 0.01){ pos.result = 'W'; wins++; }
-    else if(pos.pnl < -0.01){ pos.result = 'L'; losses++; }
-    else { pos.result = 'BE'; bes++; }
-    trades.push(pos);
+    if(p.type === 'B') exitR = (exit - p.entry) / p.slDist;
+    else exitR = (p.entry - exit) / p.slDist;
+    p.pnl = exitR * p.riskPerR;
+    p.exit = exit;
+    p.exitR = exitR;
+    p.manualClose = true;
+    if(p.pnl > 0.01){ p.result = 'W'; this.wins++; }
+    else if(p.pnl < -0.01){ p.result = 'L'; this.losses++; }
+    else { p.result = 'BE'; this.bes++; }
+    this.trades.push(p);
+    this.pos = null;
   }
 
-  return { trades, wins, losses, bes, finalBal: bal, type1Count, type2Count };
+  // ============================================================
+  // MAIN LOOP — every candle checked, no skipping
+  // ============================================================
+  run(cd){
+    for(let i = 2; i < cd.length; i++){
+      // 1. Manage active position first
+      if(this.pos){
+        this.manageTrade(cd[i]);
+      }
+
+      // 2. If position still open → skip new signals
+      if(this.pos) continue;
+
+      // 3. Signal on PREVIOUS closed candle (idx = i-1)
+      const idx = i - 1;
+      const signal = this.checkEngulfing(cd, idx);
+      if(!signal) continue;
+
+      // 4. Open trade immediately — NO FILTERS
+      this.openTrade(signal, cd[idx]);
+    }
+
+    // End of data: close open position
+    this.forceClose(cd[cd.length - 1]);
+
+    return {
+      trades: this.trades,
+      wins: this.wins,
+      losses: this.losses,
+      bes: this.bes,
+      finalBalance: this.balance
+    };
+  }
 }
 
 // ============================================================
-// STATISTIKA
+// RUN ENGINE
+// ============================================================
+function calcTrades(cd){
+  const engine = new TradeEngine(getBal(), getLotStart(), getLotCap(), getSLBuf());
+  return engine.run(cd);
+}
+
+// ============================================================
+// STATISTIKA UI
 // ============================================================
 function stats(result){
   const trades = result.trades;
@@ -449,7 +393,7 @@ function stats(result){
 
   const L = document.getElementById('lst');
   if(!trades.length){
-    L.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8">Flat Type 2 signal yo\'q<br><span style="font-size:9px;color:#64748b">Type 1 bloklandi</span></div>';
+    L.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8">Signal yo\'q</div>';
     return;
   }
 
@@ -463,17 +407,18 @@ function stats(result){
     const rc = t.result === 'W' ? 'w' : t.result === 'L' ? 'l' : 'be';
     const rt = (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(1) + '$';
     const rTxt = t.exitR !== undefined ? ` (${t.exitR >= 0 ? '+' : ''}${t.exitR.toFixed(1)}R)` : '';
+    const eng = t.engulfCandles === 2 ? '<span class="eng-badge">2C</span>' : '<span class="eng-badge">1C</span>';
     return `<div class="li">
       <span class="t">${ts}</span>
       <span class="sb ${t.type === 'B' ? 'b' : 's'}">${t.type === 'B' ? 'BUY' : 'SELL'}</span>
-      <span class="p">@${fmt(t.entry)}<span class="lot-badge">${t.lot.toFixed(2)}</span><span class="t2-badge">T2</span>${rTxt}</span>
+      <span class="p">@${fmt(t.entry)}<span class="lot-badge">${t.lot.toFixed(2)}</span>${eng}${rTxt}</span>
       <span class="rr ${rc}">${rt}</span>
     </div>`;
   }).join('');
 }
 
 // ============================================================
-// ASOSIY
+// ASOSIY YUKLASH
 // ============================================================
 async function load(){
   const ld = document.getElementById('ld');
@@ -501,7 +446,7 @@ async function load(){
     stats(result);
     chart.timeScale().fitContent();
     ld.classList.add('x');
-    st.textContent = '✅ ' + CFG.sym + ' ' + CFG.tf + ' · T2: ' + result.type2Count + ' · T1 bloklandi: ' + result.type1Count + ' · Savdo: ' + result.trades.length;
+    st.textContent = '✅ ' + CFG.sym + ' ' + CFG.tf + ' · ' + result.trades.length + ' savdo';
   } catch(e){
     ld.textContent = '⚠️ ' + e.message;
     st.textContent = 'Xato';
