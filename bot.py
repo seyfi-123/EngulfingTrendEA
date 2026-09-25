@@ -1,15 +1,12 @@
 # ============================================================
-# EngulfingTrend Bot v5.0 — FINAL
-# Multi-Symbol: BTC, ETH, BNB, SOL
-# 1C/2C Engulfing + BE @ 1:1 + Trail 1R + Komissiya
-# Telegram + Grafik + Kunlik hisobot
+# EngulfingTrend Bot v5.0 — FINAL (Tuzatilgan)
 # ============================================================
 import os
 import asyncio
 import logging
 import time
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from binance import AsyncClient, BinanceSocketManager
 from binance.enums import SIDE_BUY, SIDE_SELL, ORDER_TYPE_MARKET
@@ -26,29 +23,18 @@ load_dotenv()
 # SOZLAMALAR
 # ============================================================
 CONFIG = {
-    # API
     'API_KEY':    os.getenv('BINANCE_API_KEY'),
     'API_SECRET': os.getenv('BINANCE_API_SECRET'),
     'TESTNET':    os.getenv('TESTNET', 'True') == 'True',
-
-    # Multi-symbol
     'SYMBOLS':    os.getenv('SYMBOLS', 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT').split(','),
     'INTERVAL':   os.getenv('INTERVAL', '5m'),
-
-    # Balans va Lot
     'BALANCE':    1000.0,
     'LOT_START':  0.05,
     'LOT_CAP':    0.50,
-
-    # SL va Trail
     'SL_BUF':     10,
     'BE_AT_R':    1.0,
     'TRAIL_STEP': 1.0,
-
-    # Komissiya (MEXC = 0.05%)
     'COMM_RATE':  0.0005,
-
-    # Chart
     'CHART_CANDLES': 100,
     'REPORT_HOUR':   18,
 }
@@ -111,13 +97,11 @@ def make_chart(candles, trades, symbol, interval, suffix=""):
         fig, ax = plt.subplots(figsize=(12, 6), facecolor='#0a0b0f')
         ax.set_facecolor('#0a0b0f')
 
-        # Shamlar
         for i, (idx, row) in enumerate(df.iterrows()):
             c = '#10b981' if row['close'] >= row['open'] else '#ef4444'
             ax.plot([i, i], [row['low'], row['high']], color=c, linewidth=1)
             ax.plot([i, i], [row['open'], row['close']], color=c, linewidth=4)
 
-        # Trade markerlari
         for t in trades[-30:]:
             try:
                 tt = datetime.fromtimestamp(t['time'])
@@ -147,7 +131,7 @@ def make_chart(candles, trades, symbol, interval, suffix=""):
 
 
 # ============================================================
-# TRADE ENGINE (HTML bilan 1:1)
+# TRADE ENGINE
 # ============================================================
 class Engine:
     def __init__(self, symbol):
@@ -169,44 +153,28 @@ class Engine:
         bonus = (self.completedTrades // 10) * 0.05
         self.currentLot = min(CONFIG['LOT_START'] + bonus, CONFIG['LOT_CAP'])
 
-    # -----------------------------------------------------------
-    # 1C/2C ENGULFING
-    # -----------------------------------------------------------
     def checkEngulfing(self, cd, idx):
         if idx < 2: return None
         cur = cd[idx]; p1 = cd[idx - 1]; p2 = cd[idx - 2]
 
-        # 1-candle engulfing
-        bull1 = (cur['close'] > cur['open']
-                 and cur['open'] <= p1['close']
-                 and cur['close'] >= p1['open']
-                 and p1['close'] < p1['open'])
-        bear1 = (cur['close'] < cur['open']
-                 and cur['open'] >= p1['close']
-                 and cur['close'] <= p1['open']
-                 and p1['close'] > p1['open'])
+        bull1 = (cur['close'] > cur['open'] and cur['open'] <= p1['close']
+                 and cur['close'] >= p1['open'] and p1['close'] < p1['open'])
+        bear1 = (cur['close'] < cur['open'] and cur['open'] >= p1['close']
+                 and cur['close'] <= p1['open'] and p1['close'] > p1['open'])
 
-        # 2-candle engulfing
         maxHigh2 = max(p1['high'], p2['high'])
         minLow2  = min(p1['low'],  p2['low'])
-        bull2 = (cur['close'] > cur['open']
-                 and p1['close'] < p1['open']
-                 and p2['close'] < p2['open']
-                 and cur['low'] <= minLow2
+        bull2 = (cur['close'] > cur['open'] and p1['close'] < p1['open']
+                 and p2['close'] < p2['open'] and cur['low'] <= minLow2
                  and cur['close'] > maxHigh2)
-        bear2 = (cur['close'] < cur['open']
-                 and p1['close'] > p1['open']
-                 and p2['close'] > p2['open']
-                 and cur['high'] >= maxHigh2
+        bear2 = (cur['close'] < cur['open'] and p1['close'] > p1['open']
+                 and p2['close'] > p2['open'] and cur['high'] >= maxHigh2
                  and cur['close'] < minLow2)
 
         if bull1 or bull2: return {'type': 'B', 'candles': 2 if bull2 else 1}
         if bear1 or bear2: return {'type': 'S', 'candles': 2 if bear2 else 1}
         return None
 
-    # -----------------------------------------------------------
-    # LOCAL TRADE LOGIC
-    # -----------------------------------------------------------
     def openLocal(self, signal, candle):
         cur = candle
         buf = CONFIG['SL_BUF'] * (cur['close'] / 100000)
@@ -233,7 +201,6 @@ class Engine:
         }
 
     def manageLocal(self, p, candle):
-        """Qaytaradi: True agar yopildi, False davom"""
         exit_price = None
         exitR = 0
 
@@ -250,7 +217,6 @@ class Engine:
             p['exitR'] = exitR
             return True
 
-        # Trail yangilash
         if p['type'] == 'B':
             maxR = (candle['high'] - p['entry']) / p['slDist']
         else:
@@ -267,15 +233,13 @@ class Engine:
 
         return False
 
-    # -----------------------------------------------------------
-    # REAL ORDERS (Binance)
-    # -----------------------------------------------------------
     async def openReal(self, client, signal, candle):
         p = self.openLocal(signal, candle)
         if not p: return
 
         try:
-            side = SIDE_BUY if signal['type'] == 'BUY' else SIDE_SELL
+            # ✅ side ni to'g'ri aniqlash
+            side = SIDE_BUY if signal['type'] == 'B' else SIDE_SELL
             order = await client.create_order(
                 symbol=self.symbol, side=side,
                 type=ORDER_TYPE_MARKET, quantity=p['lot']
@@ -291,9 +255,11 @@ class Engine:
             self.pos = p
             log.info(f"✅ {self.symbol} {signal['type']} @ ${fill}")
 
-            emoji = "🟢" if signal['type'] == 'BUY' else "🔴"
+            # ✅ Xabar uchun 'B' -> 'BUY', 'S' -> 'SELL'
+            action = "BUY" if signal['type'] == 'B' else "SELL"
+            emoji = "🟢" if signal['type'] == 'B' else "🔴"
             await tg.send(
-                f"{emoji} <b>{signal['type']} {self.symbol}</b>\n"
+                f"{emoji} <b>{action} {self.symbol}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 Entry: <b>${fill:.4f}</b>\n"
                 f"🛡 SL: ${p['sl']:.4f}\n"
@@ -303,11 +269,10 @@ class Engine:
                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
             )
 
-            # Grafik
             ch = make_chart(self.candles, self.trades, self.symbol,
-                            CONFIG['INTERVAL'], f"· {signal['type']}")
+                            CONFIG['INTERVAL'], f"· {action}")
             if ch:
-                await tg.photo(ch, f"📊 {self.symbol} · {signal['type']}")
+                await tg.photo(ch, f"📊 {self.symbol} · {action}")
 
         except Exception as e:
             log.error(f"{self.symbol} order xato: {e}")
@@ -317,7 +282,8 @@ class Engine:
         if not p: return
 
         try:
-            side = SIDE_SELL if p['type'] == 'BUY' else SIDE_BUY
+            # ✅ side ni to'g'ri aniqlash
+            side = SIDE_SELL if p['type'] == 'B' else SIDE_BUY
             await client.create_order(
                 symbol=self.symbol, side=side,
                 type=ORDER_TYPE_MARKET, quantity=p['lot']
@@ -326,13 +292,9 @@ class Engine:
             log.error(f"{self.symbol} close xato: {e}")
             return
 
-        # ============================================
-        # KOMISSIYA HISOBLASH (2 tomonlama)
-        # ============================================
         open_comm  = p['lot'] * p['entry'] * CONFIG['COMM_RATE']
         close_comm = p['lot'] * p['exit']  * CONFIG['COMM_RATE']
         total_comm = open_comm + close_comm
-
         net_pnl = p['pnl'] - total_comm
 
         self.balance    += net_pnl
@@ -341,11 +303,9 @@ class Engine:
 
         p['commission'] = total_comm
         p['net_pnl']    = net_pnl
-
         self.completedTrades += 1
         self.updateLot()
 
-        # Natija NET bilan
         if net_pnl > 0.01:
             p['result'] = 'W'; self.wins += 1
         elif net_pnl < -0.01:
@@ -355,10 +315,7 @@ class Engine:
 
         self.trades.append(p)
 
-        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | "
-                 f"gross ${p['pnl']:+.2f} | "
-                 f"comm -${total_comm:.2f} | "
-                 f"net ${net_pnl:+.2f}")
+        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | gross ${p['pnl']:+.2f} | comm -${total_comm:.2f} | net ${net_pnl:+.2f}")
 
         emoji = "✅" if p['result'] == 'W' else "❌" if p['result'] == 'L' else "⚪"
         await tg.send(
@@ -382,23 +339,21 @@ ENGINES = {}
 
 
 # ============================================================
-# WORKER (har symbol uchun)
+# WORKER
 # ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
     ENGINES[symbol] = eng
-
-    bsm  = BinanceSocketManager(client)
-    sock = bsm.kline_socket(symbol, interval=CONFIG['INTERVAL'])
-
     log.info(f"🔵 {symbol} worker boshlandi")
 
     while True:
         try:
+            # ✅ Har safar yangi socket yaratish (qayta ulanish uchun)
+            bsm = BinanceSocketManager(client)
+            sock = bsm.kline_socket(symbol, interval=CONFIG['INTERVAL'])
             async with sock as stream:
                 async for msg in stream:
                     if msg.get('e') != 'kline': continue
-
                     k = msg['k']
                     candle = {
                         'time':   k['t'] // 1000,
@@ -408,26 +363,18 @@ async def worker(client, symbol):
                         'close':  float(k['c']),
                         'closed': k['x'],
                     }
-
-                    # Yangi yopilgan sham
                     if candle['closed']:
                         eng.candles.append(candle)
-                        if len(eng.candles) > 200:
-                            eng.candles.pop(0)
-
-                        # Signal (faqat pozitsiya yo'q bo'lsa)
+                        if len(eng.candles) > 200: eng.candles.pop(0)
                         if not eng.pos:
                             idx = len(eng.candles) - 1
                             sig = eng.checkEngulfing(eng.candles, idx)
                             if sig:
                                 await eng.openReal(client, sig, candle)
-
-                    # Aktiv pozitsiya — SL va trail
                     if eng.pos:
                         closed = eng.manageLocal(eng.pos, candle)
                         if closed:
                             await eng.closeReal(client)
-
         except Exception as e:
             log.error(f"{symbol} WS xato: {e} — 5s kutish")
             await asyncio.sleep(5)
@@ -438,11 +385,10 @@ async def worker(client, symbol):
 # ============================================================
 async def daily_report():
     while True:
-        now = datetime.utcnow()
+        # ✅ UTC vaqtni to'g'ri olish
+        now = datetime.now(timezone.utc)
         if now.hour == CONFIG['REPORT_HOUR'] and now.minute < 1:
             log.info("📊 Kunlik hisobot yuborilmoqda...")
-
-            # Jami hisob
             total_bal  = sum(e.balance for e in ENGINES.values())
             total_init = sum(e.initial for e in ENGINES.values())
             total_w    = sum(e.wins for e in ENGINES.values())
@@ -450,59 +396,39 @@ async def daily_report():
             total_be   = sum(e.bes for e in ENGINES.values())
             total_comm = sum(e.total_comm for e in ENGINES.values())
             total_done = total_w + total_l + total_be
-
             wr  = total_w / total_done * 100 if total_done > 0 else 0
             pct = (total_bal - total_init) / total_init * 100 if total_init else 0
 
-            # Xabar
-            text = (
-                f"📊 <b>KUNLIK HISOBOT</b>\n"
-                f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"<b>📈 Symbols:</b>\n"
-            )
-
+            text = (f"📊 <b>KUNLIK HISOBOT</b>\n"
+                    f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n<b>📈 Symbols:</b>\n")
             for sym, e in ENGINES.items():
                 s  = e.wins + e.losses + e.bes
                 sw = e.wins / s * 100 if s > 0 else 0
                 sp = (e.balance - e.initial) / e.initial * 100
                 emoji = "🟢" if e.balance >= e.initial else "🔴"
+                text += (f"\n{emoji} <b>{sym}</b>\n"
+                         f"├ Balans: ${e.balance:.2f}\n"
+                         f"├ O'sish: {sp:+.2f}%\n"
+                         f"├ WR: {sw:.1f}%\n"
+                         f"├ ✅{e.wins} ❌{e.losses} ⚪{e.bes}\n"
+                         f"└ 🔻 Komissiya: -${e.total_comm:.2f}\n")
 
-                text += (
-                    f"\n{emoji} <b>{sym}</b>\n"
-                    f"├ Balans: ${e.balance:.2f}\n"
-                    f"├ O'sish: {sp:+.2f}%\n"
-                    f"├ WR: {sw:.1f}%\n"
-                    f"├ ✅{e.wins} ❌{e.losses} ⚪{e.bes}\n"
-                    f"└ 🔻 Komissiya: -${e.total_comm:.2f}\n"
-                )
-
-            text += (
-                f"\n━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>📊 JAMI:</b>\n"
-                f"├ ✅ W: {total_w} | ❌ L: {total_l} | ⚪ BE: {total_be}\n"
-                f"├ 🎯 Win Rate: <b>{wr:.1f}%</b>\n"
-                f"├ 💵 Umumiy balans: <b>${total_bal:.2f}</b>\n"
-                f"├ 🔻 Umumiy komissiya: <b>-${total_comm:.2f}</b>\n"
-                f"└ 📈 Umumiy o'sish: <b>{pct:+.2f}%</b>"
-            )
-
+            text += (f"\n━━━━━━━━━━━━━━━━━━━━━━\n<b>📊 JAMI:</b>\n"
+                     f"├ ✅ W: {total_w} | ❌ L: {total_l} | ⚪ BE: {total_be}\n"
+                     f"├ 🎯 Win Rate: <b>{wr:.1f}%</b>\n"
+                     f"├ 💵 Umumiy balans: <b>${total_bal:.2f}</b>\n"
+                     f"├ 🔻 Umumiy komissiya: <b>-${total_comm:.2f}</b>\n"
+                     f"└ 📈 Umumiy o'sish: <b>{pct:+.2f}%</b>")
             await tg.send(text)
 
-            # Har symbol uchun grafik
             for sym, e in ENGINES.items():
                 if e.candles:
-                    ch = make_chart(e.candles, e.trades, sym,
-                                    CONFIG['INTERVAL'], "· kunlik")
+                    ch = make_chart(e.candles, e.trades, sym, CONFIG['INTERVAL'], "· kunlik")
                     if ch:
                         s  = e.wins + e.losses + e.bes
                         sw = e.wins / s * 100 if s > 0 else 0
-                        await tg.photo(
-                            ch,
-                            f"📊 <b>{sym}</b> · WR: {sw:.1f}% · "
-                            f"Balans: ${e.balance:.2f}"
-                        )
-
+                        await tg.photo(ch, f"📊 <b>{sym}</b> · WR: {sw:.1f}% · Balans: ${e.balance:.2f}")
             await asyncio.sleep(60)
         await asyncio.sleep(30)
 
@@ -527,14 +453,12 @@ async def main():
         f"✅ Bot aktiv"
     )
 
-    # Binance client
     client = await AsyncClient.create(
         api_key=CONFIG['API_KEY'],
         api_secret=CONFIG['API_SECRET'],
         testnet=CONFIG['TESTNET']
     )
 
-    # Hamma task'larni ishga tushirish
     tasks = [asyncio.create_task(worker(client, s)) for s in CONFIG['SYMBOLS']]
     tasks.append(asyncio.create_task(daily_report()))
 
