@@ -1,4 +1,5 @@
-python-binance
-python-telegram-bot
-python-dotenv
-matplotlib
+python-binance==1.0.19
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+matplotlib==3.8.2
+pandas==2.1.4
