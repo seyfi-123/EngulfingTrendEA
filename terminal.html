@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Engulfing · Aggressive</title>
+<title>Engulfing · Step Trail</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,sans-serif}
@@ -30,25 +30,32 @@ body{background:#0a0b0f;color:#e2e8f0}
 .ctrl{padding:8px 12px;background:#1a1e2e;border-radius:8px;margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap;font-size:10px;color:#94a3b8;align-items:center}
 .ctrl input{width:52px;padding:4px 6px;background:#0a0b0f;border:1px solid #ffffff1f;border-radius:5px;color:#e2e8f0;font-size:10px;font-family:monospace;text-align:center}
 .hd{display:flex;justify-content:space-between;font-size:10px;color:#94a3b8;text-transform:uppercase;margin-bottom:5px}
-.lst{max-height:200px;overflow-y:auto;background:#1a1e2e;border-radius:8px}
+.lst{max-height:220px;overflow-y:auto;background:#1a1e2e;border-radius:8px}
 .lst::-webkit-scrollbar{width:3px}
 .lst::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:2px}
-.li{display:grid;grid-template-columns:56px 38px 1fr 72px;gap:5px;padding:7px 8px;border-bottom:1px solid #ffffff0d;font-family:monospace;font-size:10px;align-items:center}
+.li{display:grid;grid-template-columns:52px 36px 1fr 74px;gap:4px;padding:7px 8px;border-bottom:1px solid #ffffff0d;font-family:monospace;font-size:10px;align-items:center}
 .li:last-child{border:0}
 .li .t{color:#94a3b8;font-size:9px}
 .sb{font-weight:700;padding:2px 5px;border-radius:4px;text-align:center;font-size:8px}
 .sb.b{background:#10b98133;color:#6ee7b7}
 .sb.s{background:#ef444433;color:#fca5a5}
-.li .p{color:#cbd5e1;font-size:9px}
-.li .rr{text-align:right;font-weight:700}
+.li .p{color:#cbd5e1;font-size:9px;line-height:1.3}
+.li .p .line1{display:block;color:#cbd5e1}
+.li .p .line2{display:block;color:#64748b;font-size:8px;margin-top:1px}
+.li .rr{text-align:right;font-weight:700;font-size:10px}
 .li .rr.w{color:#6ee7b7}.li .rr.l{color:#fca5a5}.li .rr.be{color:#fbbf24}
-.lot-badge{display:inline-block;background:#334155;color:#e2e8f0;padding:1px 4px;border-radius:3px;font-size:8px;margin-left:3px}
-.eng-badge{display:inline-block;background:#3b82f633;color:#93c5fd;padding:1px 4px;border-radius:3px;font-size:8px;margin-left:3px}
+.badge{display:inline-block;padding:1px 4px;border-radius:3px;font-size:7px;margin-left:2px;font-weight:700}
+.b-lot{background:#334155;color:#e2e8f0}
+.b-1c{background:#3b82f633;color:#93c5fd}
+.b-2c{background:#a855f733;color:#c4b5fd}
+.b-tp1{background:#10b98133;color:#6ee7b7}
+.b-be{background:#f59e0b33;color:#fbbf24}
+.b-tr{background:#06b6d433;color:#67e8f9}
 </style>
 </head>
 <body>
 
-<div class="h"><b>🎯 Engulfing · Aggressive</b><div class="st" id="st">...</div></div>
+<div class="h"><b>🎯 Engulfing · Step Trail</b><div class="st" id="st">...</div></div>
 
 <div class="c">
 <div class="b on" onclick="S(this,'s','BTCUSDT')">BTC</div>
@@ -79,8 +86,9 @@ body{background:#0a0b0f;color:#e2e8f0}
 <span>SLbuf:</span><input type="number" id="slBufInput" value="10" step="5" onchange="load()">
 <span>Lot start:</span><input type="number" id="lotStart" value="0.05" step="0.01" onchange="load()">
 <span>Lot cap:</span><input type="number" id="lotCap" value="0.50" step="0.05" onchange="load()">
+<span style="color:#6ee7b7">TP1: 30% @ 1:1 + Step Trail</span>
 </div>
-<div class="hd"><span>📋 Savdolar · Zero Filter</span><span id="lc">0</span></div>
+<div class="hd"><span>📋 Savdolar · BE dan keyin qadam-baqadam</span><span id="lc">0</span></div>
 <div class="lst" id="lst"><div style="padding:20px;text-align:center;color:#94a3b8">Kutilmoqda...</div></div>
 </div>
 
@@ -89,6 +97,9 @@ body{background:#0a0b0f;color:#e2e8f0}
 // SOZLAMALAR
 // ============================================================
 const CFG = { sym: 'BTCUSDT', tf: '5m', mo: 3 };
+const TP1_PCT = 0.30;       // 30% 1:1 da yopiladi
+const BE_AT_R = 1.0;         // BE darajasi
+const TRAIL_STEP = 0.5;      // Qadam kattaligi (0.5R yoki 1R)
 
 function getBal(){ return parseFloat(document.getElementById('balInput').value) || 1000; }
 function getSLBuf(){ return parseFloat(document.getElementById('slBufInput').value) || 10; }
@@ -153,7 +164,7 @@ async function fetchCandles(){
 }
 
 // ============================================================
-// TRADE ENGINE CLASS
+// TRADE ENGINE — Step-by-step trail
 // ============================================================
 class TradeEngine {
   constructor(initialBalance, lotStart, lotCap, slBuf){
@@ -169,16 +180,17 @@ class TradeEngine {
     this.wins = 0;
     this.losses = 0;
     this.bes = 0;
+    this.tp1Hits = 0;
+    this.trailSteps = 0;   // necha marta trail ko'chgan
   }
 
-  // Lot scaling: 0.05 → 0.10 (10 wins) → 0.15 (20) → ... → 0.50 cap
   updateLot(){
     const bonus = Math.floor(this.completedTrades / 10) * 0.05;
     this.currentLot = Math.min(this.lotStart + bonus, this.lotCap);
   }
 
   // ============================================================
-  // SIGNAL DETECTION — 1 OR 2 CANDLE ENGULFING (no filters)
+  // 1 OR 2 CANDLE ENGULFING
   // ============================================================
   checkEngulfing(cd, idx){
     if(idx < 2) return null;
@@ -186,15 +198,13 @@ class TradeEngine {
     const p1 = cd[idx - 1];
     const p2 = cd[idx - 2];
 
-    // --- 1-candle engulfing (cur swallows p1) ---
     const bull1 = cur.close > cur.open &&
-                  cur.open <= p1.close && cur.close >= p1.open &&
-                  p1.close < p1.open;
+                  p1.close < p1.open &&
+                  cur.open <= p1.close && cur.close >= p1.open;
     const bear1 = cur.close < cur.open &&
-                  cur.open >= p1.close && cur.close <= p1.open &&
-                  p1.close > p1.open;
+                  p1.close > p1.open &&
+                  cur.open >= p1.close && cur.close <= p1.open;
 
-    // --- 2-candle engulfing (cur swallows p1 + p2) ---
     const maxHigh2 = Math.max(p1.high, p2.high);
     const minLow2  = Math.min(p1.low, p2.low);
     const bull2 = cur.close > cur.open &&
@@ -210,13 +220,13 @@ class TradeEngine {
   }
 
   // ============================================================
-  // MANAGE TRADE — MULTI-STAGE TRAILING
+  // MANAGE — BE + Step-by-step Trail
   // ============================================================
   manageTrade(candle){
     const p = this.pos;
     if(!p) return;
 
-    // --- 1. ESKI SL tegilganmi? ---
+    // ---- 1. SL tegilganini tekshirish ----
     let exit = 0, exitR = 0, closed = false;
 
     if(p.type === 'B' && candle.low <= p.sl){
@@ -230,13 +240,14 @@ class TradeEngine {
     }
 
     if(closed){
-      p.pnl = exitR * p.riskPerR;
+      const finalPnl = exitR * p.riskPerR * p.qty;
+      p.pnl += finalPnl;
       p.exit = exit;
       p.exitR = exitR;
       if(p.pnl > 0.01){ p.result = 'W'; this.wins++; }
       else if(p.pnl < -0.01){ p.result = 'L'; this.losses++; }
       else { p.result = 'BE'; this.bes++; }
-      this.balance += p.pnl;
+      this.balance += finalPnl;
       this.completedTrades++;
       this.trades.push(p);
       this.pos = null;
@@ -244,27 +255,65 @@ class TradeEngine {
       return;
     }
 
-    // --- 2. TRAILING STOP yangilash ---
+    // ---- 2. Max R hisoblash ----
     let maxR;
     if(p.type === 'B') maxR = (candle.high - p.entry) / p.slDist;
     else maxR = (p.entry - candle.low) / p.slDist;
 
+    // ---- 3. TP1: 1:1 da 30% yopiladi ----
+    if(maxR >= 1 && !p.tp1Done){
+      p.tp1Done = true;
+      this.tp1Hits++;
+
+      const partialPnl = 1.0 * p.riskPerR * TP1_PCT;
+      p.pnl += partialPnl;
+      p.tp1Pnl = partialPnl;
+      p.qty = 1 - TP1_PCT;
+    }
+
+    // ============================================================
+    // 4. STEP-BY-STEP TRAIL
+    // ============================================================
+    // 1R → BE (0R)
+    // 1.5R → 0.5R
+    // 2R → 1R
+    // 2.5R → 1.5R
+    // 3R → 2R
+    // ... va hokazo
+    //
+    // Formula: SL = (maxR - 1) * slDist (BE + step*R)
+    // Keyin har 0.5R da yangilanadi
+    // ============================================================
+
     if(maxR >= 1){
-      // 1R → BE (0R), 2R → 1R, 3R → 2R, ...
-      const trailR = Math.floor(maxR) - 1;
-      let newSL;
-      if(p.type === 'B'){
-        newSL = p.entry + trailR * p.slDist;
-        if(newSL > p.sl) p.sl = newSL;
-      } else {
-        newSL = p.entry - trailR * p.slDist;
-        if(newSL < p.sl) p.sl = newSL;
+      // Daraja: 0.5R qadamlar
+      // 1R → 0R, 1.5R → 0.5R, 2R → 1R, 2.5R → 1.5R, 3R → 2R
+      const steps = Math.floor(maxR / TRAIL_STEP);       // 1R→2, 1.5R→3, 2R→4
+      const lockR = (steps - 2) * TRAIL_STEP;            // 2 steps=0R, 3 steps=0.5R, 4 steps=1R
+      
+      if(lockR >= 0){
+        let newSL;
+        if(p.type === 'B'){
+          newSL = p.entry + lockR * p.slDist;
+          if(newSL > p.sl){
+            p.sl = newSL;
+            p.lockR = lockR;
+            this.trailSteps++;
+          }
+        } else {
+          newSL = p.entry - lockR * p.slDist;
+          if(newSL < p.sl){
+            p.sl = newSL;
+            p.lockR = lockR;
+            this.trailSteps++;
+          }
+        }
       }
     }
   }
 
   // ============================================================
-  // OPEN NEW POSITION
+  // OPEN TRADE
   // ============================================================
   openTrade(signal, candle){
     const cur = candle;
@@ -291,12 +340,17 @@ class TradeEngine {
       initialSL: slPrice,
       slDist,
       lot: this.currentLot,
-      riskPerR
+      riskPerR,
+      pnl: 0,
+      qty: 1.0,
+      tp1Done: false,
+      tp1Pnl: 0,
+      lockR: -1
     };
   }
 
   // ============================================================
-  // FORCE CLOSE at end of data
+  // FORCE CLOSE
   // ============================================================
   forceClose(lastCandle){
     const p = this.pos;
@@ -305,7 +359,8 @@ class TradeEngine {
     let exitR;
     if(p.type === 'B') exitR = (exit - p.entry) / p.slDist;
     else exitR = (p.entry - exit) / p.slDist;
-    p.pnl = exitR * p.riskPerR;
+    const finalPnl = exitR * p.riskPerR * p.qty;
+    p.pnl += finalPnl;
     p.exit = exit;
     p.exitR = exitR;
     p.manualClose = true;
@@ -317,28 +372,20 @@ class TradeEngine {
   }
 
   // ============================================================
-  // MAIN LOOP — every candle checked, no skipping
+  // MAIN LOOP
   // ============================================================
   run(cd){
     for(let i = 2; i < cd.length; i++){
-      // 1. Manage active position first
-      if(this.pos){
-        this.manageTrade(cd[i]);
-      }
-
-      // 2. If position still open → skip new signals
+      if(this.pos) this.manageTrade(cd[i]);
       if(this.pos) continue;
 
-      // 3. Signal on PREVIOUS closed candle (idx = i-1)
       const idx = i - 1;
       const signal = this.checkEngulfing(cd, idx);
       if(!signal) continue;
 
-      // 4. Open trade immediately — NO FILTERS
       this.openTrade(signal, cd[idx]);
     }
 
-    // End of data: close open position
     this.forceClose(cd[cd.length - 1]);
 
     return {
@@ -346,13 +393,15 @@ class TradeEngine {
       wins: this.wins,
       losses: this.losses,
       bes: this.bes,
+      tp1Hits: this.tp1Hits,
+      trailSteps: this.trailSteps,
       finalBalance: this.balance
     };
   }
 }
 
 // ============================================================
-// RUN ENGINE
+// RUN
 // ============================================================
 function calcTrades(cd){
   const engine = new TradeEngine(getBal(), getLotStart(), getLotCap(), getSLBuf());
@@ -360,7 +409,7 @@ function calcTrades(cd){
 }
 
 // ============================================================
-// STATISTIKA UI
+// STATISTIKA
 // ============================================================
 function stats(result){
   const trades = result.trades;
@@ -406,19 +455,36 @@ function stats(result){
     const fmt = v => v < 1 ? v.toFixed(4) : v < 100 ? v.toFixed(2) : v.toFixed(0);
     const rc = t.result === 'W' ? 'w' : t.result === 'L' ? 'l' : 'be';
     const rt = (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(1) + '$';
-    const rTxt = t.exitR !== undefined ? ` (${t.exitR >= 0 ? '+' : ''}${t.exitR.toFixed(1)}R)` : '';
-    const eng = t.engulfCandles === 2 ? '<span class="eng-badge">2C</span>' : '<span class="eng-badge">1C</span>';
+
+    const engBadge = t.engulfCandles === 2
+      ? '<span class="badge b-2c">2C</span>'
+      : '<span class="badge b-1c">1C</span>';
+    const tp1Badge = t.tp1Done ? '<span class="badge b-tp1">TP1</span>' : '';
+    const lockBadge = t.lockR >= 0
+      ? `<span class="badge b-tr">+${t.lockR.toFixed(1)}R</span>`
+      : '';
+
+    const finalR = t.exitR !== undefined
+      ? ` (${t.exitR >= 0 ? '+' : ''}${t.exitR.toFixed(1)}R)`
+      : '';
+    const qtyInfo = t.tp1Done && t.qty < 1
+      ? ` · qolgan ${Math.round(t.qty * 100)}%`
+      : '';
+
     return `<div class="li">
       <span class="t">${ts}</span>
       <span class="sb ${t.type === 'B' ? 'b' : 's'}">${t.type === 'B' ? 'BUY' : 'SELL'}</span>
-      <span class="p">@${fmt(t.entry)}<span class="lot-badge">${t.lot.toFixed(2)}</span>${eng}${rTxt}</span>
+      <span class="p">
+        <span class="line1">@${fmt(t.entry)} <span class="badge b-lot">${t.lot.toFixed(2)}</span>${engBadge}${tp1Badge}${lockBadge}</span>
+        <span class="line2">${finalR}${qtyInfo}</span>
+      </span>
       <span class="rr ${rc}">${rt}</span>
     </div>`;
   }).join('');
 }
 
 // ============================================================
-// ASOSIY YUKLASH
+// ASOSIY
 // ============================================================
 async function load(){
   const ld = document.getElementById('ld');
@@ -446,7 +512,7 @@ async function load(){
     stats(result);
     chart.timeScale().fitContent();
     ld.classList.add('x');
-    st.textContent = '✅ ' + CFG.sym + ' ' + CFG.tf + ' · ' + result.trades.length + ' savdo';
+    st.textContent = '✅ ' + CFG.sym + ' ' + CFG.tf + ' · ' + result.trades.length + ' savdo · Trail steps: ' + result.trailSteps;
   } catch(e){
     ld.textContent = '⚠️ ' + e.message;
     st.textContent = 'Xato';
