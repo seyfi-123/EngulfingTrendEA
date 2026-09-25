@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Engulfing · Commission ON</title>
+<title>Engulfing · Smart TP1</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,sans-serif}
@@ -58,7 +58,7 @@ body{background:#0a0b0f;color:#e2e8f0}
 </head>
 <body>
 
-<div class="h"><b>🎯 Engulfing · Commission ON</b><div class="st" id="st">...</div></div>
+<div class="h"><b>🎯 Engulfing · Smart TP1</b><div class="st" id="st">...</div></div>
 
 <div class="c">
 <div class="b on" onclick="S(this,'s','BTCUSDT')">BTC</div>
@@ -94,20 +94,22 @@ body{background:#0a0b0f;color:#e2e8f0}
 <span>Lot:</span><input type="number" id="lotStart" value="0.05" step="0.01" onchange="load()">
 <span>Cap:</span><input type="number" id="lotCap" value="0.50" step="0.05" onchange="load()">
 <span>Comm‰:</span><input type="number" id="commInput" value="5" step="1" onchange="load()">
-<label><input type="checkbox" id="commOn" checked onchange="load()"> Komissiya yoniq</label>
-<span style="color:#6ee7b7">TP1: 30%</span>
+<label><input type="checkbox" id="commOn" checked onchange="load()"> Komissiya</label>
+<span style="color:#6ee7b7">TP1: 15% @ 1:2</span>
 </div>
-<div class="hd"><span>📋 Savdolar · Net P&L + Komissiya</span><span id="lc">0</span></div>
+<div class="hd"><span>📋 Savdolar · BE @ 1:1 + TP1 @ 1:2 (15%) + Step Trail</span><span id="lc">0</span></div>
 <div class="lst" id="lst"><div style="padding:20px;text-align:center;color:#94a3b8">Kutilmoqda...</div></div>
 </div>
 
 <script>
 // ============================================================
-// SOZLAMALAR
+// SOZLAMALAR — YANGI QOIDALAR
 // ============================================================
 const CFG = { sym: 'BTCUSDT', tf: '5m', mo: 3 };
-const TP1_PCT = 0.30;
-const TRAIL_STEP = 0.5;
+const TP1_PCT = 0.15;         // 15% @ 1:2 da yopiladi
+const TP1_AT_R = 2.0;         // TP1 1:2 ga yetganda
+const BE_AT_R = 1.0;          // BE 1:1 da
+const TRAIL_STEP = 0.5;       // 0.5R qadam
 
 function getBal(){ return parseFloat(document.getElementById('balInput').value) || 1000; }
 function getSLBuf(){ return parseFloat(document.getElementById('slBufInput').value) || 10; }
@@ -170,7 +172,7 @@ async function fetchCandles(){
 }
 
 // ============================================================
-// TRADE ENGINE — Komissiya bilan
+// TRADE ENGINE — YANGI QOIDALAR
 // ============================================================
 class TradeEngine {
   constructor(initialBalance, lotStart, lotCap, slBuf){
@@ -229,7 +231,7 @@ class TradeEngine {
     const p = this.pos;
     if(!p) return;
 
-    // ---- SL tegilganini tekshirish ----
+    // ---- 1. SL tegilganini tekshirish ----
     let exit = 0, exitR = 0, closed = false;
     if(p.type === 'B' && candle.low <= p.sl){
       exit = p.sl;
@@ -269,18 +271,38 @@ class TradeEngine {
       return;
     }
 
-    // ---- Max R ----
+    // ---- 2. Max R hisoblash ----
     let maxR;
     if(p.type === 'B') maxR = (candle.high - p.entry) / p.slDist;
     else maxR = (p.entry - candle.low) / p.slDist;
 
-    // ---- TP1 30% ----
-    if(maxR >= 1 && !p.tp1Done){
+    // ============================================================
+    // 3. QOIDA 1: BE @ 1:1
+    // SL entry'ga (BE) suriladi — hech qachon zarar yo'q
+    // ============================================================
+    if(maxR >= BE_AT_R && !p.beSet){
+      p.sl = p.entry;
+      p.beSet = true;
+      p.lockR = 0;
+    }
+
+    // ============================================================
+    // 4. QOIDA 2: TP1 @ 1:2 (15% qism yopiladi)
+    // Komissiyani qoplaydi + kichik foyda
+    // ============================================================
+    if(maxR >= TP1_AT_R && !p.tp1Done){
       p.tp1Done = true;
       this.tp1Hits++;
 
-      const tp1Exit = p.type === 'B' ? p.entry + p.slDist : p.entry - p.slDist;
-      const tp1Gross = 1.0 * p.riskPerR * TP1_PCT;
+      // TP1 exit narxi = 2R
+      const tp1Exit = p.type === 'B'
+        ? p.entry + TP1_AT_R * p.slDist
+        : p.entry - TP1_AT_R * p.slDist;
+
+      // Gross foyda = 2R × 15%
+      const tp1Gross = TP1_AT_R * p.riskPerR * TP1_PCT;
+
+      // Komissiya 15% hajm
       const tp1Size = p.lot * TP1_PCT;
       const tp1Comm = tp1Size * tp1Exit * this.commRate;
       const tp1Net = tp1Gross - tp1Comm;
@@ -293,15 +315,18 @@ class TradeEngine {
       this.totalCommission += tp1Comm;
       this.totalGross += tp1Gross;
 
+      // Qolgan 85%
       p.qty = 1 - TP1_PCT;
-      p.sl = p.entry;
-      p.beSet = true;
     }
 
-    // ---- Step trail ----
-    if(maxR >= 1){
+    // ============================================================
+    // 5. QOIDA 3: STEP TRAIL (0.5R qadam)
+    // 1.5R → 0.5R, 2R → 1R, 2.5R → 1.5R, 3R → 2R, 4R → 3R...
+    // ============================================================
+    if(maxR >= BE_AT_R){
       const steps = Math.floor(maxR / TRAIL_STEP);
       const lockR = (steps - 2) * TRAIL_STEP;
+      
       if(lockR >= 0){
         let newSL;
         if(p.type === 'B'){
@@ -420,8 +445,7 @@ class TradeEngine {
       tp1Hits: this.tp1Hits,
       totalCommission: this.totalCommission,
       totalGross: this.totalGross,
-      finalBalance: this.balance,
-      initialBalance: this.initialBalance
+      finalBalance: this.balance
     };
   }
 }
