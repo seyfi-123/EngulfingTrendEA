@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.1 — FINAL (BinanceSocketManager, async)
+# EngulfingTrend Bot v5.2 — FINAL (BinanceSocketManager + Risk % Lot Sizing)
 # ============================================================
 import os
 import asyncio
@@ -29,8 +29,9 @@ CONFIG = {
     'SYMBOLS':    os.getenv('SYMBOLS', 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT').split(','),
     'INTERVAL':   os.getenv('INTERVAL', '5m'),
     'BALANCE':    1000.0,
-    'LOT_START':  0.05,
-    'LOT_CAP':    0.50,
+    'RISK_PCT':   0.05,      # har savdoda balансning shu foizi risk qilinadi (0.05 = 5%)
+    'LOT_MIN':    0.001,     # minimal lot (Binance exchange filter'ga qarab moslang)
+    'LOT_MAX':    2.0,       # xavfsizlik uchun yuqori chegara
     'SL_BUF':     10,
     'BE_AT_R':    1.0,
     'TRAIL_STEP': 1.0,
@@ -138,7 +139,6 @@ class Engine:
         self.symbol = symbol
         self.balance = CONFIG['BALANCE']
         self.initial = CONFIG['BALANCE']
-        self.currentLot = CONFIG['LOT_START']
         self.completedTrades = 0
         self.wins = 0
         self.losses = 0
@@ -149,9 +149,24 @@ class Engine:
         self.total_comm = 0.0
         self.gross_pnl = 0.0
 
-    def updateLot(self):
-        bonus = (self.completedTrades // 10) * 0.05
-        self.currentLot = min(CONFIG['LOT_START'] + bonus, CONFIG['LOT_CAP'])
+    def calcLot(self, slDist, price):
+        """
+        Lot ҳажмини balансning RISK_PCT foizidан ҳисоблайди.
+        Risk summasi = balans * risk%
+        Lot = Risk summasi / SL masofasi (narxda)
+        """
+        risk_amount = self.balance * CONFIG['RISK_PCT']
+        if slDist <= 0 or price <= 0:
+            return CONFIG['LOT_MIN']
+
+        lot = risk_amount / slDist
+        lot = max(CONFIG['LOT_MIN'], min(lot, CONFIG['LOT_MAX']))
+
+        # Pozitsiya qiymati balansdan oshib ketmasligi uchun qo'shimcha cheklov
+        max_lot_by_balance = self.balance / price
+        lot = min(lot, max_lot_by_balance)
+
+        return round(lot, 3)
 
     def checkEngulfing(self, cd, idx):
         if idx < 2: return None
@@ -188,6 +203,9 @@ class Engine:
 
         if slDist <= 0: return None
 
+        lot = self.calcLot(slDist, cur['close'])
+        if lot <= 0: return None
+
         return {
             'time': cur['time'],
             'type': signal['type'],
@@ -196,8 +214,9 @@ class Engine:
             'sl': slPrice,
             'initialSL': slPrice,
             'slDist': slDist,
-            'lot': self.currentLot,
-            'riskPerR': self.currentLot * slDist,
+            'lot': lot,
+            'riskPerR': lot * slDist,
+            'balance_at_entry': self.balance,
         }
 
     def manageLocal(self, p, candle):
@@ -252,7 +271,7 @@ class Engine:
                 p['sl'] = fill + p['slDist']
 
             self.pos = p
-            log.info(f"✅ {self.symbol} {signal['type']} @ ${fill}")
+            log.info(f"✅ {self.symbol} {signal['type']} @ ${fill} | lot={p['lot']} | risk=${p['riskPerR']:.2f}")
 
             action = "BUY" if signal['type'] == 'B' else "SELL"
             emoji = "🟢" if signal['type'] == 'B' else "🔴"
@@ -261,7 +280,7 @@ class Engine:
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 Entry: <b>${fill:.4f}</b>\n"
                 f"🛡 SL: ${p['sl']:.4f}\n"
-                f"💰 Lot: {p['lot']}\n"
+                f"💰 Lot: {p['lot']} (risk: ${p['riskPerR']:.2f})\n"
                 f"🎯 Engulf: <b>{p['engulfCandles']}C</b>\n"
                 f"💵 Balans: ${self.balance:.2f}\n"
                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
@@ -301,7 +320,6 @@ class Engine:
         p['commission'] = total_comm
         p['net_pnl']    = net_pnl
         self.completedTrades += 1
-        self.updateLot()
 
         if net_pnl > 0.01:
             p['result'] = 'W'; self.wins += 1
@@ -312,7 +330,7 @@ class Engine:
 
         self.trades.append(p)
 
-        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | gross ${p['pnl']:+.2f} | comm -${total_comm:.2f} | net ${net_pnl:+.2f}")
+        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | gross ${p['pnl']:+.2f} | comm -${total_comm:.2f} | net ${net_pnl:+.2f} | balans ${self.balance:.2f}")
 
         emoji = "✅" if p['result'] == 'W' else "❌" if p['result'] == 'L' else "⚪"
         await tg.send(
@@ -440,17 +458,18 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.1 ishga tushdi")
+    log.info("🚀 Bot v5.2 ishga tushdi")
     log.info(f"Symbols: {CONFIG['SYMBOLS']}")
     log.info(f"TF: {CONFIG['INTERVAL']} | TESTNET: {CONFIG['TESTNET']}")
-    log.info(f"Komissiya: {CONFIG['COMM_RATE']*100:.2f}%")
+    log.info(f"Risk/trade: {CONFIG['RISK_PCT']*100:.1f}% | Komissiya: {CONFIG['COMM_RATE']*100:.2f}%")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.1</b>\n"
+        f"🚀 <b>Engulfing Bot v5.2</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Symbols: <b>{', '.join(CONFIG['SYMBOLS'])}</b>\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"🔒 TESTNET: {CONFIG['TESTNET']}\n"
+        f"⚖️ Risk/trade: {CONFIG['RISK_PCT']*100:.1f}%\n"
         f"💰 Komissiya: {CONFIG['COMM_RATE']*100:.2f}%\n"
         f"💵 Balans: $1000 × {len(CONFIG['SYMBOLS'])}\n"
         f"✅ Bot aktiv"
