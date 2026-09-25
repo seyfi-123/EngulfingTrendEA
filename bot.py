@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.2 — FINAL (BinanceSocketManager + Risk % Lot Sizing)
+# EngulfingTrend Bot v5.3 — FINAL (Multi-position + Risk % Lot Sizing)
 # ============================================================
 import os
 import asyncio
@@ -29,9 +29,10 @@ CONFIG = {
     'SYMBOLS':    os.getenv('SYMBOLS', 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT').split(','),
     'INTERVAL':   os.getenv('INTERVAL', '5m'),
     'BALANCE':    1000.0,
-    'RISK_PCT':   0.05,      # har savdoda balансning shu foizi risk qilinadi (0.05 = 5%)
-    'LOT_MIN':    0.001,     # minimal lot (Binance exchange filter'ga qarab moslang)
-    'LOT_MAX':    2.0,       # xavfsizlik uchun yuqori chegara
+    'RISK_PCT':   0.05,
+    'LOT_MIN':    0.001,
+    'LOT_MAX':    2.0,
+    'MAX_OPEN_POS': 5,     # har symbol uchun bir vaqtda ochiq bo'lishi mumkin bo'lgan max pozitsiya soni
     'SL_BUF':     10,
     'BE_AT_R':    1.0,
     'TRAIL_STEP': 1.0,
@@ -143,18 +144,13 @@ class Engine:
         self.wins = 0
         self.losses = 0
         self.bes = 0
-        self.pos = None
+        self.positions = []
         self.candles = []
         self.trades = []
         self.total_comm = 0.0
         self.gross_pnl = 0.0
 
     def calcLot(self, slDist, price):
-        """
-        Lot ҳажмини balансning RISK_PCT foizidан ҳисоблайди.
-        Risk summasi = balans * risk%
-        Lot = Risk summasi / SL masofasi (narxda)
-        """
         risk_amount = self.balance * CONFIG['RISK_PCT']
         if slDist <= 0 or price <= 0:
             return CONFIG['LOT_MIN']
@@ -162,7 +158,6 @@ class Engine:
         lot = risk_amount / slDist
         lot = max(CONFIG['LOT_MIN'], min(lot, CONFIG['LOT_MAX']))
 
-        # Pozitsiya qiymati balansdan oshib ketmasligi uchun qo'shimcha cheklov
         max_lot_by_balance = self.balance / price
         lot = min(lot, max_lot_by_balance)
 
@@ -253,6 +248,10 @@ class Engine:
         return False
 
     async def openReal(self, client, signal, candle):
+        if len(self.positions) >= CONFIG['MAX_OPEN_POS']:
+            log.info(f"{self.symbol}: max pozitsiya limiti ({CONFIG['MAX_OPEN_POS']}) yetdi, signal o'tkazib yuborildi")
+            return
+
         p = self.openLocal(signal, candle)
         if not p: return
 
@@ -270,8 +269,8 @@ class Engine:
             else:
                 p['sl'] = fill + p['slDist']
 
-            self.pos = p
-            log.info(f"✅ {self.symbol} {signal['type']} @ ${fill} | lot={p['lot']} | risk=${p['riskPerR']:.2f}")
+            self.positions.append(p)
+            log.info(f"✅ {self.symbol} {signal['type']} @ ${fill} | lot={p['lot']} | risk=${p['riskPerR']:.2f} | ochiq: {len(self.positions)}")
 
             action = "BUY" if signal['type'] == 'B' else "SELL"
             emoji = "🟢" if signal['type'] == 'B' else "🔴"
@@ -282,6 +281,7 @@ class Engine:
                 f"🛡 SL: ${p['sl']:.4f}\n"
                 f"💰 Lot: {p['lot']} (risk: ${p['riskPerR']:.2f})\n"
                 f"🎯 Engulf: <b>{p['engulfCandles']}C</b>\n"
+                f"📂 Ochiq pozitsiyalar: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}\n"
                 f"💵 Balans: ${self.balance:.2f}\n"
                 f"⏰ {datetime.now().strftime('%H:%M:%S')}"
             )
@@ -294,10 +294,7 @@ class Engine:
         except Exception as e:
             log.error(f"{self.symbol} order xato: {e}")
 
-    async def closeReal(self, client):
-        p = self.pos
-        if not p: return
-
+    async def closeReal(self, client, p):
         try:
             side = SIDE_SELL if p['type'] == 'B' else SIDE_BUY
             await client.create_order(
@@ -329,8 +326,9 @@ class Engine:
             p['result'] = 'BE'; self.bes += 1
 
         self.trades.append(p)
+        self.positions.remove(p)
 
-        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | gross ${p['pnl']:+.2f} | comm -${total_comm:.2f} | net ${net_pnl:+.2f} | balans ${self.balance:.2f}")
+        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | gross ${p['pnl']:+.2f} | comm -${total_comm:.2f} | net ${net_pnl:+.2f} | balans ${self.balance:.2f} | ochiq: {len(self.positions)}")
 
         emoji = "✅" if p['result'] == 'W' else "❌" if p['result'] == 'L' else "⚪"
         await tg.send(
@@ -341,10 +339,10 @@ class Engine:
             f"💵 Gross: ${p['pnl']:+.2f}\n"
             f"🔻 Komissiya: -${total_comm:.2f}\n"
             f"💰 <b>Net: ${net_pnl:+.2f}</b>\n"
+            f"📂 Ochiq pozitsiyalar: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}\n"
             f"📈 Balans: <b>${self.balance:.2f}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
-        self.pos = None
 
 
 # ============================================================
@@ -386,16 +384,16 @@ async def worker(client, symbol):
                     if candle['closed']:
                         eng.candles.append(candle)
                         if len(eng.candles) > 200: eng.candles.pop(0)
-                        if not eng.pos:
-                            idx = len(eng.candles) - 1
-                            sig = eng.checkEngulfing(eng.candles, idx)
-                            if sig:
-                                await eng.openReal(client, sig, candle)
 
-                    if eng.pos:
-                        closed = eng.manageLocal(eng.pos, candle)
+                        idx = len(eng.candles) - 1
+                        sig = eng.checkEngulfing(eng.candles, idx)
+                        if sig:
+                            await eng.openReal(client, sig, candle)
+
+                    for p in list(eng.positions):
+                        closed = eng.manageLocal(p, candle)
                         if closed:
-                            await eng.closeReal(client)
+                            await eng.closeReal(client, p)
 
         except Exception as e:
             log.error(f"{symbol} socket xato: {e} — 5s dan keyin qayta ulanadi")
@@ -433,6 +431,7 @@ async def daily_report():
                          f"├ O'sish: {sp:+.2f}%\n"
                          f"├ WR: {sw:.1f}%\n"
                          f"├ ✅{e.wins} ❌{e.losses} ⚪{e.bes}\n"
+                         f"├ 📂 Ochiq: {len(e.positions)}\n"
                          f"└ 🔻 Komissiya: -${e.total_comm:.2f}\n")
 
             text += (f"\n━━━━━━━━━━━━━━━━━━━━━━\n<b>📊 JAMI:</b>\n"
@@ -458,18 +457,19 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.2 ishga tushdi")
+    log.info("🚀 Bot v5.3 ishga tushdi")
     log.info(f"Symbols: {CONFIG['SYMBOLS']}")
     log.info(f"TF: {CONFIG['INTERVAL']} | TESTNET: {CONFIG['TESTNET']}")
-    log.info(f"Risk/trade: {CONFIG['RISK_PCT']*100:.1f}% | Komissiya: {CONFIG['COMM_RATE']*100:.2f}%")
+    log.info(f"Risk/trade: {CONFIG['RISK_PCT']*100:.1f}% | Max pozitsiya: {CONFIG['MAX_OPEN_POS']} | Komissiya: {CONFIG['COMM_RATE']*100:.2f}%")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.2</b>\n"
+        f"🚀 <b>Engulfing Bot v5.3</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Symbols: <b>{', '.join(CONFIG['SYMBOLS'])}</b>\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"🔒 TESTNET: {CONFIG['TESTNET']}\n"
         f"⚖️ Risk/trade: {CONFIG['RISK_PCT']*100:.1f}%\n"
+        f"📂 Max pozitsiya (symbolga): {CONFIG['MAX_OPEN_POS']}\n"
         f"💰 Komissiya: {CONFIG['COMM_RATE']*100:.2f}%\n"
         f"💵 Balans: $1000 × {len(CONFIG['SYMBOLS'])}\n"
         f"✅ Bot aktiv"
