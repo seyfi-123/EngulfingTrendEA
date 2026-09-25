@@ -1,23 +1,24 @@
 # ============================================================
-# EngulfingTrend Bot v5.0 — Fast Entry (Mid-Candle)
-# ETH/BNB/SOL × 15m
-# 2-candle engulfing · Multiple positions · Closed-candle SL/BE/Trail
+# EngulfingTrend Bot v5.0 — FINAL
+# Multi-Symbol: BTC, ETH, BNB, SOL
+# 1C/2C Engulfing + BE @ 1:1 + Trail 1R + Komissiya
+# Telegram + Grafik + Kunlik hisobot
 # ============================================================
 import os
 import asyncio
 import logging
 import time
-from io import BytesIO
-from datetime import datetime, timezone
+import io
+from datetime import datetime
 from dotenv import load_dotenv
 from binance import AsyncClient, BinanceSocketManager
 from binance.enums import SIDE_BUY, SIDE_SELL, ORDER_TYPE_MARKET
-from telegram import Bot
-
+from telegram import Bot, InputFile
+from telegram.constants import ParseMode
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+import pandas as pd
 
 load_dotenv()
 
@@ -25,28 +26,31 @@ load_dotenv()
 # SOZLAMALAR
 # ============================================================
 CONFIG = {
-    'API_KEY':      os.getenv('BINANCE_API_KEY'),
-    'API_SECRET':   os.getenv('BINANCE_API_SECRET'),
-    'TESTNET':      os.getenv('TESTNET', 'True') == 'True',
+    # API
+    'API_KEY':    os.getenv('BINANCE_API_KEY'),
+    'API_SECRET': os.getenv('BINANCE_API_SECRET'),
+    'TESTNET':    os.getenv('TESTNET', 'True') == 'True',
 
-    'SYMBOLS':      ['ETHUSDT', 'BNBUSDT', 'SOLUSDT'],
-    'TIMEFRAME':    '15m',
-    'MAX_POSITIONS': 5,          # То 5 позиция ҳамзамон
+    # Multi-symbol
+    'SYMBOLS':    os.getenv('SYMBOLS', 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT').split(','),
+    'INTERVAL':   os.getenv('INTERVAL', '5m'),
 
-    'SL_BUF':       10,
-    'LOT_START':    0.05,
-    'LOT_CAP':      0.50,
-    'COMM_RATE':    0.0005,
+    # Balans va Lot
+    'BALANCE':    1000.0,
+    'LOT_START':  0.05,
+    'LOT_CAP':    0.50,
 
-    'TP1_PCT':      0.15,
-    'TP1_AT_R':     2.0,
-    'BE_AT_R':      1.0,
-    'TRAIL_STEP':   0.5,
+    # SL va Trail
+    'SL_BUF':     10,
+    'BE_AT_R':    1.0,
+    'TRAIL_STEP': 1.0,
 
-    'MAX_DAILY_LOSS':    5.0,
-    'MAX_CONSEC_LOSSES': 5,
-    'COOLDOWN_HOURS':    4,
-    'ENTRY_COOLDOWN':    30,     # 30 сония байни кушоданҳо
+    # Komissiya (MEXC = 0.05%)
+    'COMM_RATE':  0.0005,
+
+    # Chart
+    'CHART_CANDLES': 100,
+    'REPORT_HOUR':   18,
 }
 
 TELEGRAM_TOKEN   = os.getenv('TELEGRAM_TOKEN')
@@ -54,517 +58,490 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s',
+    format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler()]
 )
 log = logging.getLogger(__name__)
 
 
 # ============================================================
-# TELEGRAM
+# TELEGRAM HELPER
 # ============================================================
-async def send_telegram(msg):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
+class TG:
+    def __init__(self, token, chat_id):
+        self.bot = Bot(token=token) if token else None
+        self.chat_id = chat_id
+
+    async def send(self, msg):
+        if not self.bot: return
+        try:
+            await self.bot.send_message(
+                chat_id=self.chat_id, text=msg,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            log.error(f"TG text: {e}")
+
+    async def photo(self, buf, caption=""):
+        if not self.bot: return
+        try:
+            await self.bot.send_photo(
+                chat_id=self.chat_id,
+                photo=InputFile(buf, filename='chart.png'),
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            log.error(f"TG photo: {e}")
+
+
+tg = TG(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
+
+
+# ============================================================
+# GRAFIK YARATISH
+# ============================================================
+def make_chart(candles, trades, symbol, interval, suffix=""):
     try:
-        bot = Bot(token=TELEGRAM_TOKEN)
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='HTML')
+        if not candles: return None
+        df = pd.DataFrame(candles[-CONFIG['CHART_CANDLES']:])
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        df = df.set_index('time')
+
+        fig, ax = plt.subplots(figsize=(12, 6), facecolor='#0a0b0f')
+        ax.set_facecolor('#0a0b0f')
+
+        # Shamlar
+        for i, (idx, row) in enumerate(df.iterrows()):
+            c = '#10b981' if row['close'] >= row['open'] else '#ef4444'
+            ax.plot([i, i], [row['low'], row['high']], color=c, linewidth=1)
+            ax.plot([i, i], [row['open'], row['close']], color=c, linewidth=4)
+
+        # Trade markerlari
+        for t in trades[-30:]:
+            try:
+                tt = datetime.fromtimestamp(t['time'])
+                if tt in df.index:
+                    i = list(df.index).index(tt)
+                    c = '#10b981' if t['type'] == 'B' else '#ef4444'
+                    m = '^' if t['type'] == 'B' else 'v'
+                    ax.scatter(i, t['entry'], color=c, marker=m, s=120, zorder=5)
+            except: pass
+
+        ax.set_title(f'{symbol} · {interval} {suffix}',
+                     color='#e2e8f0', fontsize=14, pad=15)
+        ax.tick_params(colors='#94a3b8', labelsize=9)
+        ax.grid(True, alpha=0.1, color='#ffffff')
+        for sp in ax.spines.values():
+            sp.set_color('#ffffff14')
+
+        plt.tight_layout()
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=80, facecolor='#0a0b0f')
+        plt.close(fig)
+        buf.seek(0)
+        return buf
     except Exception as e:
-        log.error(f"Telegram xato: {e}")
-
-
-async def send_photo(img_bytes, caption):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    try:
-        bot = Bot(token=TELEGRAM_TOKEN)
-        await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=img_bytes,
-                             caption=caption, parse_mode='HTML')
-    except Exception as e:
-        log.error(f"Telegram photo xato: {e}")
+        log.error(f"chart: {e}")
+        return None
 
 
 # ============================================================
-# ГРАФИК
+# TRADE ENGINE (HTML bilan 1:1)
 # ============================================================
-def create_chart(symbol, candles, signal, positions):
-    fig, ax = plt.subplots(figsize=(10, 5), dpi=100)
-    fig.patch.set_facecolor('#0a0b0f')
-    ax.set_facecolor('#0a0b0f')
-
-    show = candles[-50:]
-    for i, c in enumerate(show):
-        color = '#10b981' if c['close'] >= c['open'] else '#ef4444'
-        ax.plot([i, i], [c['low'], c['high']], color=color, linewidth=0.8)
-        body_low = min(c['open'], c['close'])
-        body_high = max(c['open'], c['close'])
-        if body_high > body_low:
-            rect = Rectangle((i - 0.35, body_low), 0.7,
-                             body_high - body_low,
-                             facecolor=color, edgecolor=color)
-            ax.add_patch(rect)
-
-    n = len(show)
-    if signal and n > 0:
-        sig_c = show[-1]
-        if signal['type'] == 'B':
-            ax.annotate('BUY', xy=(n-1, sig_c['low']),
-                        color='#6ee7b7', fontsize=12, fontweight='bold',
-                        ha='center', va='top')
-        else:
-            ax.annotate('SELL', xy=(n-1, sig_c['high']),
-                        color='#fca5a5', fontsize=12, fontweight='bold',
-                        ha='center', va='bottom')
-
-    colors = ['#60a5fa', '#a855f7', '#f59e0b', '#06b6d4', '#ec4899']
-    for i, p in enumerate(positions):
-        c = colors[i % len(colors)]
-        ax.axhline(p['entry'], color=c, linestyle='--', linewidth=1, alpha=0.7)
-        ax.axhline(p['sl'], color='#ef4444', linestyle=':', linewidth=1, alpha=0.7)
-        ax.text(n - 0.5, p['entry'], f' #{i+1} {p["entry"]:.2f}',
-                color=c, fontsize=7, va='center')
-
-    ax.set_title(f'{symbol} · {CONFIG["TIMEFRAME"]}', color='white', fontsize=12)
-    ax.tick_params(colors='#94a3b8', labelsize=8)
-    ax.grid(True, color='#ffffff10', linewidth=0.5)
-    for spine in ax.spines.values():
-        spine.set_color('#ffffff20')
-    plt.tight_layout()
-
-    buf = BytesIO()
-    plt.savefig(buf, format='png', facecolor='#0a0b0f')
-    plt.close(fig)
-    buf.seek(0)
-    return buf
-
-
-# ============================================================
-# TRADE ENGINE
-# ============================================================
-class TradeEngine:
-    def __init__(self, symbol, timeframe):
+class Engine:
+    def __init__(self, symbol):
         self.symbol = symbol
-        self.tf = timeframe
-        self.name = f"{symbol}·{timeframe}"
-
-        self.balance = 1000.0
-        self.initial_balance = 1000.0
-        self.current_lot = CONFIG['LOT_START']
-        self.completed_trades = 0
+        self.balance = CONFIG['BALANCE']
+        self.initial = CONFIG['BALANCE']
+        self.currentLot = CONFIG['LOT_START']
+        self.completedTrades = 0
         self.wins = 0
         self.losses = 0
         self.bes = 0
-        self.tp1_hits = 0
-        self.trail_steps = 0
-        self.positions = []          # MULTIPLE POSITIONS
-        self.closed = []             # шамъҳои басташуда
-        self.forming = None          # шамъи ҷорӣ
-        self.last_entry_time = 0
-        self.consec_losses = 0
-        self.daily_start_balance = 1000.0
-        self.daily_date = datetime.now(timezone.utc).date()
-        self.paused_until = 0
-        self.total_commission = 0.0
-        self.total_gross = 0.0
+        self.pos = None
+        self.candles = []
+        self.trades = []
+        self.total_comm = 0.0
+        self.gross_pnl = 0.0
 
-    def update_lot(self):
-        bonus = (self.completed_trades // 10) * 0.05
-        self.current_lot = min(CONFIG['LOT_START'] + bonus, CONFIG['LOT_CAP'])
+    def updateLot(self):
+        bonus = (self.completedTrades // 10) * 0.05
+        self.currentLot = min(CONFIG['LOT_START'] + bonus, CONFIG['LOT_CAP'])
 
-    def check_daily_loss(self):
-        today = datetime.now(timezone.utc).date()
-        if today != self.daily_date:
-            self.daily_date = today
-            self.daily_start_balance = self.balance
-            self.consec_losses = 0
-        loss_pct = (self.daily_start_balance - self.balance) / self.daily_start_balance * 100
-        return loss_pct >= CONFIG['MAX_DAILY_LOSS']
+    # -----------------------------------------------------------
+    # 1C/2C ENGULFING
+    # -----------------------------------------------------------
+    def checkEngulfing(self, cd, idx):
+        if idx < 2: return None
+        cur = cd[idx]; p1 = cd[idx - 1]; p2 = cd[idx - 2]
 
-    def is_paused(self):
-        return time.time() < self.paused_until
+        # 1-candle engulfing
+        bull1 = (cur['close'] > cur['open']
+                 and cur['open'] <= p1['close']
+                 and cur['close'] >= p1['open']
+                 and p1['close'] < p1['open'])
+        bear1 = (cur['close'] < cur['open']
+                 and cur['open'] >= p1['close']
+                 and cur['close'] <= p1['open']
+                 and p1['close'] > p1['open'])
 
-    def check_engulfing_now(self):
-        """Санҷиши шамъи ҷорӣ (дарҳол) бо шамъи қаблии басташуда"""
-        if not self.forming or len(self.closed) < 1:
-            return None
+        # 2-candle engulfing
+        maxHigh2 = max(p1['high'], p2['high'])
+        minLow2  = min(p1['low'],  p2['low'])
+        bull2 = (cur['close'] > cur['open']
+                 and p1['close'] < p1['open']
+                 and p2['close'] < p2['open']
+                 and cur['low'] <= minLow2
+                 and cur['close'] > maxHigh2)
+        bear2 = (cur['close'] < cur['open']
+                 and p1['close'] > p1['open']
+                 and p2['close'] > p2['open']
+                 and cur['high'] >= maxHigh2
+                 and cur['close'] < minLow2)
 
-        cur = self.forming
-        p1 = self.closed[-1]
-
-        # Engulfing танҳо 1 шамъ (2 шамъ дар маҷмӯъ)
-        bull = (cur['close'] > cur['open'] and
-                p1['close'] < p1['open'] and
-                cur['open'] <= p1['close'] and
-                cur['close'] >= p1['open'])
-        bear = (cur['close'] < cur['open'] and
-                p1['close'] > p1['open'] and
-                cur['open'] >= p1['close'] and
-                cur['close'] <= p1['open'])
-
-        if bull:
-            return {'type': 'B', 'candles': 1,
-                    'ref_low': min(cur['low'], p1['low'])}
-        if bear:
-            return {'type': 'S', 'candles': 1,
-                    'ref_high': max(cur['high'], p1['high'])}
+        if bull1 or bull2: return {'type': 'B', 'candles': 2 if bull2 else 1}
+        if bear1 or bear2: return {'type': 'S', 'candles': 2 if bear2 else 1}
         return None
 
-    async def open_trade(self, client, signal, candle):
-        now = time.time()
-        if self.is_paused():
-            return
-        if now - self.last_entry_time < CONFIG['ENTRY_COOLDOWN']:
-            return
-        if len(self.positions) >= CONFIG['MAX_POSITIONS']:
-            return
+    # -----------------------------------------------------------
+    # LOCAL TRADE LOGIC
+    # -----------------------------------------------------------
+    def openLocal(self, signal, candle):
+        cur = candle
+        buf = CONFIG['SL_BUF'] * (cur['close'] / 100000)
 
         if signal['type'] == 'B':
-            buf = CONFIG['SL_BUF'] * (candle['close'] / 100000)
-            sl = signal['ref_low'] - buf
-            sl_dist = candle['close'] - sl
+            slPrice = cur['low'] - buf
+            slDist = cur['close'] - slPrice
         else:
-            buf = CONFIG['SL_BUF'] * (candle['close'] / 100000)
-            sl = signal['ref_high'] + buf
-            sl_dist = sl - candle['close']
+            slPrice = cur['high'] + buf
+            slDist = slPrice - cur['close']
 
-        if sl_dist <= 0:
-            return
+        if slDist <= 0: return None
 
-        lot = self.current_lot
-        risk_per_r = lot * 100
-        open_comm = lot * candle['close'] * CONFIG['COMM_RATE']
-        self.balance -= open_comm
-        self.total_commission += open_comm
+        return {
+            'time': cur['time'],
+            'type': signal['type'],
+            'engulfCandles': signal['candles'],
+            'entry': cur['close'],
+            'sl': slPrice,
+            'initialSL': slPrice,
+            'slDist': slDist,
+            'lot': self.currentLot,
+            'riskPerR': self.currentLot * 100,
+        }
 
-        try:
-            side = SIDE_BUY if signal['type'] == 'B' else SIDE_SELL
-            order = await client.create_order(
-                symbol=self.symbol, side=side,
-                type=ORDER_TYPE_MARKET, quantity=lot
-            )
-            fill_price = float(order['fills'][0]['price'])
-
-            pos = {
-                'time': now, 'symbol': self.symbol,
-                'type': signal['type'],
-                'entry': fill_price,
-                'sl': sl,
-                'initial_sl': sl,
-                'sl_dist': sl_dist,
-                'lot': lot,
-                'risk_per_r': risk_per_r,
-                'pnl': 0.0,
-                'gross': 0.0,
-                'commission': open_comm,
-                'qty': 1.0,
-                'tp1_done': False,
-                'be_set': False,
-                'lock_r': -1,
-                'trail_alerted': set(),
-                'max_r': 0.0,
-            }
-            self.positions.append(pos)
-            self.last_entry_time = now
-
-            log.info(f"[{self.name}] ⚡ {signal['type']} {lot} @ ${fill_price:.4f} (pos #{len(self.positions)})")
-
-            img = create_chart(self.symbol, self.closed + [self.forming], signal, self.positions)
-            caption = (
-                f"⚡ <b>{signal['type']} КУШОДА (Fast)</b> [{self.name}] #{len(self.positions)}\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"💰 Entry: <b>${fill_price:.4f}</b>\n"
-                f"🛑 SL: <b>${sl:.4f}</b> ({(sl_dist/fill_price*100):.2f}%)\n"
-                f"📊 Lot: <b>{lot}</b>\n"
-                f"🕯️ Engulf: 1C (2 шамъ)\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"💵 Баланс: <b>${self.balance:.2f}</b>\n"
-                f"📂 Кушода: {len(self.positions)}/{CONFIG['MAX_POSITIONS']}"
-            )
-            await send_photo(img, caption)
-
-        except Exception as e:
-            log.error(f"[{self.name}] Order xato: {e}")
-
-    async def manage_positions(self, client, candle):
-        for pos in list(self.positions):
-            await self._manage_one(client, pos, candle)
-
-    async def _manage_one(self, client, p, candle):
-        cur_high = candle['high']
-        cur_low = candle['low']
-
-        # Max R (информативӣ)
-        if p['type'] == 'B':
-            r_now = (cur_high - p['entry']) / p['sl_dist']
-        else:
-            r_now = (p['entry'] - cur_low) / p['sl_dist']
-        if r_now > p['max_r']:
-            p['max_r'] = r_now
-
-        # SL тег
+    def manageLocal(self, p, candle):
+        """Qaytaradi: True agar yopildi, False davom"""
         exit_price = None
-        exit_r = 0
-        if p['type'] == 'B' and cur_low <= p['sl']:
+        exitR = 0
+
+        if p['type'] == 'B' and candle['low'] <= p['sl']:
             exit_price = p['sl']
-            exit_r = (exit_price - p['entry']) / p['sl_dist']
-        elif p['type'] == 'S' and cur_high >= p['sl']:
+            exitR = (exit_price - p['entry']) / p['slDist']
+        elif p['type'] == 'S' and candle['high'] >= p['sl']:
             exit_price = p['sl']
-            exit_r = (p['entry'] - exit_price) / p['sl_dist']
+            exitR = (p['entry'] - exit_price) / p['slDist']
 
         if exit_price is not None:
-            await self._close_position(client, p, exit_price, exit_r)
-            return
+            p['pnl'] = exitR * p['riskPerR']
+            p['exit'] = exit_price
+            p['exitR'] = exitR
+            return True
 
-        # TP1 @ 2R
-        if p['max_r'] >= CONFIG['TP1_AT_R'] and not p['tp1_done']:
-            p['tp1_done'] = True
-            self.tp1_hits += 1
+        # Trail yangilash
+        if p['type'] == 'B':
+            maxR = (candle['high'] - p['entry']) / p['slDist']
+        else:
+            maxR = (p['entry'] - candle['low']) / p['slDist']
 
-            tp1_exit = (p['entry'] + CONFIG['TP1_AT_R'] * p['sl_dist']
-                        if p['type'] == 'B'
-                        else p['entry'] - CONFIG['TP1_AT_R'] * p['sl_dist'])
-            tp1_gross = CONFIG['TP1_AT_R'] * p['risk_per_r'] * CONFIG['TP1_PCT']
-            tp1_size = p['lot'] * CONFIG['TP1_PCT']
-            tp1_comm = tp1_size * tp1_exit * CONFIG['COMM_RATE']
-            tp1_net = tp1_gross - tp1_comm
-
-            p['pnl'] += tp1_net
-            p['gross'] += tp1_gross
-            p['commission'] += tp1_comm
-            self.balance += tp1_net
-            self.total_commission += tp1_comm
-            self.total_gross += tp1_gross
-            p['qty'] = 1 - CONFIG['TP1_PCT']
-
-            try:
-                side = SIDE_SELL if p['type'] == 'B' else SIDE_BUY
-                await client.create_order(
-                    symbol=self.symbol, side=side,
-                    type=ORDER_TYPE_MARKET, quantity=round(tp1_size, 5)
-                )
-                await send_telegram(
-                    f"💰 <b>TP1 (15%) @ 2R</b> [{self.name}]\n"
-                    f"Net: <b>${tp1_net:+.2f}</b>\n"
-                    f"Қолди: 85%\n"
-                    f"💵 Баланс: ${self.balance:.2f}"
-                )
-            except Exception as e:
-                log.error(f"[{self.name}] TP1 xato: {e}")
-
-    async def on_candle_close(self, candle):
-        """Вақте шамъ мебаста шавад — SL/BE/Trail нав мешавад"""
-        self.closed.append(candle)
-        if len(self.closed) > 200:
-            self.closed.pop(0)
-
-        buf = CONFIG['SL_BUF'] * (candle['close'] / 100000)
-
-        for p in list(self.positions):
-            # ==== 1. Trail SL аз рӯи шамъи басташуда ====
+        if maxR >= CONFIG['BE_AT_R']:
+            trailR = int(maxR) - 1
             if p['type'] == 'B':
-                candidate = candle['low'] - buf
-                if candidate > p['sl']:
-                    p['sl'] = candidate
+                newSL = p['entry'] + trailR * p['slDist']
+                if newSL > p['sl']: p['sl'] = newSL
             else:
-                candidate = candle['high'] + buf
-                if candidate < p['sl']:
-                    p['sl'] = candidate
+                newSL = p['entry'] - trailR * p['slDist']
+                if newSL < p['sl']: p['sl'] = newSL
 
-            # ==== 2. BE @ 1:1 (аз рӯи шамъи басташуда) ====
-            if p['type'] == 'B':
-                closed_r = (candle['high'] - p['entry']) / p['sl_dist']
-            else:
-                closed_r = (p['entry'] - candle['low']) / p['sl_dist']
+        return False
 
-            if closed_r >= CONFIG['BE_AT_R'] and not p['be_set']:
-                # SL-ро ба Entry мебарор
-                if p['type'] == 'B':
-                    if p['entry'] > p['sl']:
-                        p['sl'] = p['entry']
-                else:
-                    if p['entry'] < p['sl']:
-                        p['sl'] = p['entry']
-                p['be_set'] = True
-                p['lock_r'] = 0
-                await send_telegram(
-                    f"🛡️ <b>BE (Break-even) @ 1:1</b> [{self.name}]\n"
-                    f"SL ба Entry: <b>${p['entry']:.4f}</b>\n"
-                    f"Аз ин пас — <b>хатар нест!</b> 🎉\n"
-                    f"💵 Баланс: ${self.balance:.2f}"
-                )
+    # -----------------------------------------------------------
+    # REAL ORDERS (Binance)
+    # -----------------------------------------------------------
+    async def openReal(self, client, signal, candle):
+        p = self.openLocal(signal, candle)
+        if not p: return
 
-            # ==== 3. Step Trail 0.50R ====
-            if closed_r >= CONFIG['BE_AT_R']:
-                steps = int(closed_r / CONFIG['TRAIL_STEP'])
-                lock_r = (steps - 2) * CONFIG['TRAIL_STEP']
-                if lock_r >= 0:
-                    moved = False
-                    if p['type'] == 'B':
-                        new_sl = p['entry'] + lock_r * p['sl_dist']
-                        if new_sl > p['sl']:
-                            p['sl'] = new_sl
-                            p['lock_r'] = lock_r
-                            moved = True
-                    else:
-                        new_sl = p['entry'] - lock_r * p['sl_dist']
-                        if new_sl < p['sl']:
-                            p['sl'] = new_sl
-                            p['lock_r'] = lock_r
-                            moved = True
-
-                    if moved and lock_r > 0 and lock_r not in p['trail_alerted']:
-                        p['trail_alerted'].add(lock_r)
-                        self.trail_steps += 1
-                        await send_telegram(
-                            f"📈 <b>TRAIL: +{lock_r:.1f}R</b> [{self.name}]\n"
-                            f"SL нав: <b>${p['sl']:.4f}</b>\n"
-                            f"Max R: {closed_r:.2f}R\n"
-                            f"💵 Баланс: ${self.balance:.2f}"
-                        )
-
-    async def _close_position(self, client, p, exit_price, exit_r):
         try:
-            side = SIDE_SELL if p['type'] == 'B' else SIDE_BUY
+            side = SIDE_BUY if signal['type'] == 'BUY' else SIDE_SELL
+            order = await client.create_order(
+                symbol=self.symbol, side=side,
+                type=ORDER_TYPE_MARKET, quantity=p['lot']
+            )
+            fill = float(order['fills'][0]['price'])
+            p['entry'] = fill
+
+            if p['type'] == 'B':
+                p['sl'] = fill - p['slDist']
+            else:
+                p['sl'] = fill + p['slDist']
+
+            self.pos = p
+            log.info(f"✅ {self.symbol} {signal['type']} @ ${fill}")
+
+            emoji = "🟢" if signal['type'] == 'BUY' else "🔴"
+            await tg.send(
+                f"{emoji} <b>{signal['type']} {self.symbol}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 Entry: <b>${fill:.4f}</b>\n"
+                f"🛡 SL: ${p['sl']:.4f}\n"
+                f"💰 Lot: {p['lot']}\n"
+                f"🎯 Engulf: <b>{p['engulfCandles']}C</b>\n"
+                f"💵 Balans: ${self.balance:.2f}\n"
+                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+            )
+
+            # Grafik
+            ch = make_chart(self.candles, self.trades, self.symbol,
+                            CONFIG['INTERVAL'], f"· {signal['type']}")
+            if ch:
+                await tg.photo(ch, f"📊 {self.symbol} · {signal['type']}")
+
+        except Exception as e:
+            log.error(f"{self.symbol} order xato: {e}")
+
+    async def closeReal(self, client):
+        p = self.pos
+        if not p: return
+
+        try:
+            side = SIDE_SELL if p['type'] == 'BUY' else SIDE_BUY
             await client.create_order(
                 symbol=self.symbol, side=side,
-                type=ORDER_TYPE_MARKET, quantity=round(p['lot'] * p['qty'], 5)
+                type=ORDER_TYPE_MARKET, quantity=p['lot']
             )
         except Exception as e:
-            log.error(f"[{self.name}] Close xato: {e}")
+            log.error(f"{self.symbol} close xato: {e}")
             return
 
-        gross_pnl = exit_r * p['risk_per_r'] * p['qty']
-        close_size = p['lot'] * p['qty']
-        close_comm = close_size * exit_price * CONFIG['COMM_RATE']
-        net_pnl = gross_pnl - close_comm
+        # ============================================
+        # KOMISSIYA HISOBLASH (2 tomonlama)
+        # ============================================
+        open_comm  = p['lot'] * p['entry'] * CONFIG['COMM_RATE']
+        close_comm = p['lot'] * p['exit']  * CONFIG['COMM_RATE']
+        total_comm = open_comm + close_comm
 
-        p['gross'] += gross_pnl
-        p['commission'] += close_comm
-        p['pnl'] += net_pnl
-        p['exit'] = exit_price
-        p['exit_r'] = exit_r
+        net_pnl = p['pnl'] - total_comm
 
-        self.balance += net_pnl
-        self.total_commission += close_comm
-        self.total_gross += gross_pnl
+        self.balance    += net_pnl
+        self.gross_pnl  += p['pnl']
+        self.total_comm += total_comm
 
-        if p['pnl'] > 0.01:
-            p['result'] = 'W'; self.wins += 1; self.consec_losses = 0
-        elif p['pnl'] < -0.01:
-            p['result'] = 'L'; self.losses += 1; self.consec_losses += 1
-            if self.consec_losses >= CONFIG['MAX_CONSEC_LOSSES']:
-                self.paused_until = time.time() + CONFIG['COOLDOWN_HOURS'] * 3600
+        p['commission'] = total_comm
+        p['net_pnl']    = net_pnl
+
+        self.completedTrades += 1
+        self.updateLot()
+
+        # Natija NET bilan
+        if net_pnl > 0.01:
+            p['result'] = 'W'; self.wins += 1
+        elif net_pnl < -0.01:
+            p['result'] = 'L'; self.losses += 1
         else:
             p['result'] = 'BE'; self.bes += 1
 
-        self.completed_trades += 1
-        self.update_lot()
-        self.positions.remove(p)
+        self.trades.append(p)
 
-        total_pnl = self.balance - self.initial_balance
-        total_pct = total_pnl / self.initial_balance * 100
-        wr = (self.wins / self.completed_trades * 100) if self.completed_trades else 0
-        emoji = "🟢" if p['result'] == 'W' else "🔴" if p['result'] == 'L' else "⚪"
+        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | "
+                 f"gross ${p['pnl']:+.2f} | "
+                 f"comm -${total_comm:.2f} | "
+                 f"net ${net_pnl:+.2f}")
 
-        await send_telegram(
-            f"{emoji} <b>ЁПИЛДИ</b> [{self.name}] {p['type']}\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"📍 Entry: ${p['entry']:.4f}\n"
-            f"🚪 Exit: <b>${exit_price:.4f}</b>\n"
-            f"📊 Натиҷа: <b>{exit_r:+.2f}R</b>\n"
-            f"💰 Net: <b>${net_pnl:+.2f}</b>\n"
-            f"📈 Max R: {p['max_r']:.2f}R\n"
-            f"🎯 TP1: {'✅' if p['tp1_done'] else '❌'}\n"
-            f"🛡️ BE: {'✅' if p['be_set'] else '❌'}\n"
-            f"💸 Комиссия: ${p['commission']:.3f}\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"💰 <b>Баланс: ${self.balance:.2f}</b>\n"
-            f"📊 P&L: <b>${total_pnl:+.2f}</b> ({total_pct:+.2f}%)\n"
-            f"🎯 Win Rate: <b>{wr:.1f}%</b>\n"
-            f"✅ W: {self.wins} | ❌ L: {self.losses} | ⚪ BE: {self.bes}\n"
-            f"🏆 Ҳамагӣ: {self.completed_trades} тиҷорат\n"
-            f"📂 Кушода: {len(self.positions)}"
+        emoji = "✅" if p['result'] == 'W' else "❌" if p['result'] == 'L' else "⚪"
+        await tg.send(
+            f"{emoji} <b>Yopildi {self.symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Exit: ${p['exit']:.4f}\n"
+            f"🎯 R: <b>{p['exitR']:+.2f}R</b>\n"
+            f"💵 Gross: ${p['pnl']:+.2f}\n"
+            f"🔻 Komissiya: -${total_comm:.2f}\n"
+            f"💰 <b>Net: ${net_pnl:+.2f}</b>\n"
+            f"📈 Balans: <b>${self.balance:.2f}</b>\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
+        self.pos = None
 
 
 # ============================================================
-# ҲАР СИМВОЛ
+# GLOBAL ENGINES
 # ============================================================
-async def run_symbol(symbol, client, bsm, engine):
-    socket = bsm.kline_socket(symbol, interval=CONFIG['TIMEFRAME'])
-    log.info(f"[{engine.name}] Сокет кушода шуд")
-
-    async with socket as stream:
-        while True:
-            try:
-                msg = await stream.recv()
-                if msg.get('e') != 'kline':
-                    continue
-                k = msg['k']
-
-                forming = {
-                    'time':   k['t'] // 1000,
-                    'open':   float(k['o']),
-                    'high':   float(k['h']),
-                    'low':    float(k['l']),
-                    'close':  float(k['c']),
-                    'closed': k['x'],
-                }
-
-                # Агар шамъи нав оғоз шавад → шамъи пешина баста мешавад
-                if engine.forming and engine.forming['time'] != forming['time']:
-                    engine.forming['closed'] = True
-                    await engine.on_candle_close(engine.forming)
-
-                engine.forming = forming
-
-                # ⚡ FAST ENTRY — дарҳол, бе интизори басташавӣ
-                if not engine.is_paused() and len(engine.closed) >= 1:
-                    signal = engine.check_engulfing_now()
-                    if signal:
-                        await engine.open_trade(client, signal, forming)
-
-                # Идоракунии ҳамаи позицияҳо
-                if engine.positions:
-                    await engine.manage_positions(client, forming)
-
-            except Exception as e:
-                log.error(f"[{engine.name}] Stream xato: {e}")
-                await asyncio.sleep(5)
+ENGINES = {}
 
 
 # ============================================================
-# АСОСИЙ
+# WORKER (har symbol uchun)
+# ============================================================
+async def worker(client, symbol):
+    eng = Engine(symbol)
+    ENGINES[symbol] = eng
+
+    bsm  = BinanceSocketManager(client)
+    sock = bsm.kline_socket(symbol, interval=CONFIG['INTERVAL'])
+
+    log.info(f"🔵 {symbol} worker boshlandi")
+
+    while True:
+        try:
+            async with sock as stream:
+                async for msg in stream:
+                    if msg.get('e') != 'kline': continue
+
+                    k = msg['k']
+                    candle = {
+                        'time':   k['t'] // 1000,
+                        'open':   float(k['o']),
+                        'high':   float(k['h']),
+                        'low':    float(k['l']),
+                        'close':  float(k['c']),
+                        'closed': k['x'],
+                    }
+
+                    # Yangi yopilgan sham
+                    if candle['closed']:
+                        eng.candles.append(candle)
+                        if len(eng.candles) > 200:
+                            eng.candles.pop(0)
+
+                        # Signal (faqat pozitsiya yo'q bo'lsa)
+                        if not eng.pos:
+                            idx = len(eng.candles) - 1
+                            sig = eng.checkEngulfing(eng.candles, idx)
+                            if sig:
+                                await eng.openReal(client, sig, candle)
+
+                    # Aktiv pozitsiya — SL va trail
+                    if eng.pos:
+                        closed = eng.manageLocal(eng.pos, candle)
+                        if closed:
+                            await eng.closeReal(client)
+
+        except Exception as e:
+            log.error(f"{symbol} WS xato: {e} — 5s kutish")
+            await asyncio.sleep(5)
+
+
+# ============================================================
+# KUNLIK HISOBOT
+# ============================================================
+async def daily_report():
+    while True:
+        now = datetime.utcnow()
+        if now.hour == CONFIG['REPORT_HOUR'] and now.minute < 1:
+            log.info("📊 Kunlik hisobot yuborilmoqda...")
+
+            # Jami hisob
+            total_bal  = sum(e.balance for e in ENGINES.values())
+            total_init = sum(e.initial for e in ENGINES.values())
+            total_w    = sum(e.wins for e in ENGINES.values())
+            total_l    = sum(e.losses for e in ENGINES.values())
+            total_be   = sum(e.bes for e in ENGINES.values())
+            total_comm = sum(e.total_comm for e in ENGINES.values())
+            total_done = total_w + total_l + total_be
+
+            wr  = total_w / total_done * 100 if total_done > 0 else 0
+            pct = (total_bal - total_init) / total_init * 100 if total_init else 0
+
+            # Xabar
+            text = (
+                f"📊 <b>KUNLIK HISOBOT</b>\n"
+                f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"<b>📈 Symbols:</b>\n"
+            )
+
+            for sym, e in ENGINES.items():
+                s  = e.wins + e.losses + e.bes
+                sw = e.wins / s * 100 if s > 0 else 0
+                sp = (e.balance - e.initial) / e.initial * 100
+                emoji = "🟢" if e.balance >= e.initial else "🔴"
+
+                text += (
+                    f"\n{emoji} <b>{sym}</b>\n"
+                    f"├ Balans: ${e.balance:.2f}\n"
+                    f"├ O'sish: {sp:+.2f}%\n"
+                    f"├ WR: {sw:.1f}%\n"
+                    f"├ ✅{e.wins} ❌{e.losses} ⚪{e.bes}\n"
+                    f"└ 🔻 Komissiya: -${e.total_comm:.2f}\n"
+                )
+
+            text += (
+                f"\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>📊 JAMI:</b>\n"
+                f"├ ✅ W: {total_w} | ❌ L: {total_l} | ⚪ BE: {total_be}\n"
+                f"├ 🎯 Win Rate: <b>{wr:.1f}%</b>\n"
+                f"├ 💵 Umumiy balans: <b>${total_bal:.2f}</b>\n"
+                f"├ 🔻 Umumiy komissiya: <b>-${total_comm:.2f}</b>\n"
+                f"└ 📈 Umumiy o'sish: <b>{pct:+.2f}%</b>"
+            )
+
+            await tg.send(text)
+
+            # Har symbol uchun grafik
+            for sym, e in ENGINES.items():
+                if e.candles:
+                    ch = make_chart(e.candles, e.trades, sym,
+                                    CONFIG['INTERVAL'], "· kunlik")
+                    if ch:
+                        s  = e.wins + e.losses + e.bes
+                        sw = e.wins / s * 100 if s > 0 else 0
+                        await tg.photo(
+                            ch,
+                            f"📊 <b>{sym}</b> · WR: {sw:.1f}% · "
+                            f"Balans: ${e.balance:.2f}"
+                        )
+
+            await asyncio.sleep(60)
+        await asyncio.sleep(30)
+
+
+# ============================================================
+# ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.0 (Fast Entry + Multi-Position)")
-    log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['TIMEFRAME']}")
+    log.info("🚀 Bot v5.0 ishga tushdi")
+    log.info(f"Symbols: {CONFIG['SYMBOLS']}")
+    log.info(f"TF: {CONFIG['INTERVAL']} | TESTNET: {CONFIG['TESTNET']}")
+    log.info(f"Komissiya: {CONFIG['COMM_RATE']*100:.2f}%")
 
-    await send_telegram(
+    await tg.send(
         f"🚀 <b>Engulfing Bot v5.0</b>\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"💎 {', '.join(CONFIG['SYMBOLS'])}\n"
-        f"⏱️ TF: {CONFIG['TIMEFRAME']}\n"
-        f"⚡ Fast Entry (mid-candle)\n"
-        f"📂 Max positions: {CONFIG['MAX_POSITIONS']}\n"
-        f"🧪 TESTNET: {CONFIG['TESTNET']}"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Symbols: <b>{', '.join(CONFIG['SYMBOLS'])}</b>\n"
+        f"⏱ TF: {CONFIG['INTERVAL']}\n"
+        f"🔒 TESTNET: {CONFIG['TESTNET']}\n"
+        f"💰 Komissiya: {CONFIG['COMM_RATE']*100:.2f}%\n"
+        f"💵 Balans: $1000 × {len(CONFIG['SYMBOLS'])}\n"
+        f"✅ Bot aktiv"
     )
 
+    # Binance client
     client = await AsyncClient.create(
         api_key=CONFIG['API_KEY'],
         api_secret=CONFIG['API_SECRET'],
         testnet=CONFIG['TESTNET']
     )
-    bsm = BinanceSocketManager(client)
 
-    tasks = []
-    for sym in CONFIG['SYMBOLS']:
-        engine = TradeEngine(sym, CONFIG['TIMEFRAME'])
-        tasks.append(run_symbol(sym, client, bsm, engine))
+    # Hamma task'larni ishga tushirish
+    tasks = [asyncio.create_task(worker(client, s)) for s in CONFIG['SYMBOLS']]
+    tasks.append(asyncio.create_task(daily_report()))
 
     try:
         await asyncio.gather(*tasks)
-    finally:
+    except Exception as e:
+        log.error(f"Main xato: {e}")
         await client.close_connection()
 
 
@@ -572,4 +549,4 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log.info("Bot тўхтатилди")
+        log.info("⛔ Bot to'xtatildi")
