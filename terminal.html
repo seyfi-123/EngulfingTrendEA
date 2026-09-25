@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Engulfing · Step Trail</title>
+<title>Engulfing · BE + 1R Trail</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,sans-serif}
@@ -48,14 +48,13 @@ body{background:#0a0b0f;color:#e2e8f0}
 .b-lot{background:#334155;color:#e2e8f0}
 .b-1c{background:#3b82f633;color:#93c5fd}
 .b-2c{background:#a855f733;color:#c4b5fd}
-.b-tp1{background:#10b98133;color:#6ee7b7}
 .b-be{background:#f59e0b33;color:#fbbf24}
 .b-tr{background:#06b6d433;color:#67e8f9}
 </style>
 </head>
 <body>
 
-<div class="h"><b>🎯 Engulfing · Step Trail</b><div class="st" id="st">...</div></div>
+<div class="h"><b>🎯 Engulfing · BE + 1R Trail</b><div class="st" id="st">...</div></div>
 
 <div class="c">
 <div class="b on" onclick="S(this,'s','BTCUSDT')">BTC</div>
@@ -86,9 +85,9 @@ body{background:#0a0b0f;color:#e2e8f0}
 <span>SLbuf:</span><input type="number" id="slBufInput" value="10" step="5" onchange="load()">
 <span>Lot start:</span><input type="number" id="lotStart" value="0.05" step="0.01" onchange="load()">
 <span>Lot cap:</span><input type="number" id="lotCap" value="0.50" step="0.05" onchange="load()">
-<span style="color:#6ee7b7">TP1: 30% @ 1:1 + Step Trail</span>
+<span style="color:#6ee7b7">TP1: 0% · BE @ 1:1 · Trail 1R</span>
 </div>
-<div class="hd"><span>📋 Savdolar · BE dan keyin qadam-baqadam</span><span id="lc">0</span></div>
+<div class="hd"><span>📋 Savdolar · BE + 1R Step Trail</span><span id="lc">0</span></div>
 <div class="lst" id="lst"><div style="padding:20px;text-align:center;color:#94a3b8">Kutilmoqda...</div></div>
 </div>
 
@@ -97,9 +96,8 @@ body{background:#0a0b0f;color:#e2e8f0}
 // SOZLAMALAR
 // ============================================================
 const CFG = { sym: 'BTCUSDT', tf: '5m', mo: 3 };
-const TP1_PCT = 0.30;       // 30% 1:1 da yopiladi
-const BE_AT_R = 1.0;         // BE darajasi
-const TRAIL_STEP = 0.5;      // Qadam kattaligi (0.5R yoki 1R)
+const TP1_PCT = 0;      // 0% = hech narsa 1:1 da yopilmaydi
+const TRAIL_STEP = 1;   // 1R qadam
 
 function getBal(){ return parseFloat(document.getElementById('balInput').value) || 1000; }
 function getSLBuf(){ return parseFloat(document.getElementById('slBufInput').value) || 10; }
@@ -164,7 +162,7 @@ async function fetchCandles(){
 }
 
 // ============================================================
-// TRADE ENGINE — Step-by-step trail
+// TRADE ENGINE — BE + 1R TRAIL
 // ============================================================
 class TradeEngine {
   constructor(initialBalance, lotStart, lotCap, slBuf){
@@ -180,8 +178,7 @@ class TradeEngine {
     this.wins = 0;
     this.losses = 0;
     this.bes = 0;
-    this.tp1Hits = 0;
-    this.trailSteps = 0;   // necha marta trail ko'chgan
+    this.trailSteps = 0;
   }
 
   updateLot(){
@@ -220,7 +217,7 @@ class TradeEngine {
   }
 
   // ============================================================
-  // MANAGE — BE + Step-by-step Trail
+  // MANAGE — BE @ 1:1 + 1R STEP TRAIL
   // ============================================================
   manageTrade(candle){
     const p = this.pos;
@@ -240,8 +237,8 @@ class TradeEngine {
     }
 
     if(closed){
-      const finalPnl = exitR * p.riskPerR * p.qty;
-      p.pnl += finalPnl;
+      const finalPnl = exitR * p.riskPerR;
+      p.pnl = finalPnl;
       p.exit = exit;
       p.exitR = exitR;
       if(p.pnl > 0.01){ p.result = 'W'; this.wins++; }
@@ -260,36 +257,20 @@ class TradeEngine {
     if(p.type === 'B') maxR = (candle.high - p.entry) / p.slDist;
     else maxR = (p.entry - candle.low) / p.slDist;
 
-    // ---- 3. TP1: 1:1 da 30% yopiladi ----
-    if(maxR >= 1 && !p.tp1Done){
-      p.tp1Done = true;
-      this.tp1Hits++;
-
-      const partialPnl = 1.0 * p.riskPerR * TP1_PCT;
-      p.pnl += partialPnl;
-      p.tp1Pnl = partialPnl;
-      p.qty = 1 - TP1_PCT;
-    }
-
     // ============================================================
-    // 4. STEP-BY-STEP TRAIL
+    // 3. TRAIL — 1R STEP
     // ============================================================
-    // 1R → BE (0R)
-    // 1.5R → 0.5R
-    // 2R → 1R
-    // 2.5R → 1.5R
-    // 3R → 2R
-    // ... va hokazo
-    //
-    // Formula: SL = (maxR - 1) * slDist (BE + step*R)
-    // Keyin har 0.5R da yangilanadi
+    // 1R  → BE (0R)
+    // 2R  → 1R
+    // 3R  → 2R
+    // 4R  → 3R
+    // 5R  → 4R
+    // ...
+    // N R → (N-1) R
     // ============================================================
 
     if(maxR >= 1){
-      // Daraja: 0.5R qadamlar
-      // 1R → 0R, 1.5R → 0.5R, 2R → 1R, 2.5R → 1.5R, 3R → 2R
-      const steps = Math.floor(maxR / TRAIL_STEP);       // 1R→2, 1.5R→3, 2R→4
-      const lockR = (steps - 2) * TRAIL_STEP;            // 2 steps=0R, 3 steps=0.5R, 4 steps=1R
+      const lockR = Math.floor(maxR) - 1;  // 1R→0, 2R→1, 3R→2, 4R→3...
       
       if(lockR >= 0){
         let newSL;
@@ -342,9 +323,6 @@ class TradeEngine {
       lot: this.currentLot,
       riskPerR,
       pnl: 0,
-      qty: 1.0,
-      tp1Done: false,
-      tp1Pnl: 0,
       lockR: -1
     };
   }
@@ -359,8 +337,7 @@ class TradeEngine {
     let exitR;
     if(p.type === 'B') exitR = (exit - p.entry) / p.slDist;
     else exitR = (p.entry - exit) / p.slDist;
-    const finalPnl = exitR * p.riskPerR * p.qty;
-    p.pnl += finalPnl;
+    p.pnl = exitR * p.riskPerR;
     p.exit = exit;
     p.exitR = exitR;
     p.manualClose = true;
@@ -393,7 +370,6 @@ class TradeEngine {
       wins: this.wins,
       losses: this.losses,
       bes: this.bes,
-      tp1Hits: this.tp1Hits,
       trailSteps: this.trailSteps,
       finalBalance: this.balance
     };
@@ -459,24 +435,23 @@ function stats(result){
     const engBadge = t.engulfCandles === 2
       ? '<span class="badge b-2c">2C</span>'
       : '<span class="badge b-1c">1C</span>';
-    const tp1Badge = t.tp1Done ? '<span class="badge b-tp1">TP1</span>' : '';
-    const lockBadge = t.lockR >= 0
-      ? `<span class="badge b-tr">+${t.lockR.toFixed(1)}R</span>`
+    const lockBadge = t.lockR > 0
+      ? `<span class="badge b-tr">+${t.lockR}R</span>`
+      : '';
+    const beBadge = t.lockR >= 0
+      ? '<span class="badge b-be">BE</span>'
       : '';
 
     const finalR = t.exitR !== undefined
       ? ` (${t.exitR >= 0 ? '+' : ''}${t.exitR.toFixed(1)}R)`
-      : '';
-    const qtyInfo = t.tp1Done && t.qty < 1
-      ? ` · qolgan ${Math.round(t.qty * 100)}%`
       : '';
 
     return `<div class="li">
       <span class="t">${ts}</span>
       <span class="sb ${t.type === 'B' ? 'b' : 's'}">${t.type === 'B' ? 'BUY' : 'SELL'}</span>
       <span class="p">
-        <span class="line1">@${fmt(t.entry)} <span class="badge b-lot">${t.lot.toFixed(2)}</span>${engBadge}${tp1Badge}${lockBadge}</span>
-        <span class="line2">${finalR}${qtyInfo}</span>
+        <span class="line1">@${fmt(t.entry)} <span class="badge b-lot">${t.lot.toFixed(2)}</span>${engBadge}${beBadge}${lockBadge}</span>
+        <span class="line2">${finalR}</span>
       </span>
       <span class="rr ${rc}">${rt}</span>
     </div>`;
@@ -512,7 +487,7 @@ async function load(){
     stats(result);
     chart.timeScale().fitContent();
     ld.classList.add('x');
-    st.textContent = '✅ ' + CFG.sym + ' ' + CFG.tf + ' · ' + result.trades.length + ' savdo · Trail steps: ' + result.trailSteps;
+    st.textContent = '✅ ' + CFG.sym + ' ' + CFG.tf + ' · ' + result.trades.length + ' savdo · Trail: ' + result.trailSteps;
   } catch(e){
     ld.textContent = '⚠️ ' + e.message;
     st.textContent = 'Xato';
