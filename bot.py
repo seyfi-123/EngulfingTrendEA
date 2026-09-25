@@ -229,7 +229,7 @@ class Engine:
             'initialSL': slPrice,
             'slDist': slDist,
             'lot': self.currentLot,
-            'riskPerR': self.currentLot * 100,
+            'riskPerR': self.currentLot * slDist,
         }
 
     def manageLocal(self, p, candle):
