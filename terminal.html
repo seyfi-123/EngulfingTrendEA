@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Engulfing · Pure PA</title>
+<title>Engulfing · Flat PA</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,sans-serif}
@@ -47,7 +47,7 @@ body{background:#0a0b0f;color:#e2e8f0}
 </head>
 <body>
 
-<div class="h"><b>🎯 Engulfing · Pure PA</b><div class="st" id="st">...</div></div>
+<div class="h"><b>🎯 Engulfing · Flat PA</b><div class="st" id="st">...</div></div>
 
 <div class="c">
 <div class="b on" onclick="S(this,'s','BTCUSDT')">BTC</div>
@@ -55,8 +55,8 @@ body{background:#0a0b0f;color:#e2e8f0}
 <div class="b" onclick="S(this,'s','BNBUSDT')">BNB</div>
 <div class="b" onclick="S(this,'s','SOLUSDT')">SOL</div>
 <div style="width:1px;background:#ffffff1f;margin:0 4px"></div>
-<div class="b" onclick="S(this,'t','5m')">M5</div>
-<div class="b on" onclick="S(this,'t','15m')">M15</div>
+<div class="b on" onclick="S(this,'t','5m')">M5</div>
+<div class="b" onclick="S(this,'t','15m')">M15</div>
 <div class="b" onclick="S(this,'t','1h')">H1</div>
 <div class="b" onclick="S(this,'t','4h')">H4</div>
 </div>
@@ -79,8 +79,9 @@ body{background:#0a0b0f;color:#e2e8f0}
 <span>SLbuf:</span><input type="number" id="slBufInput" value="10" step="5" onchange="load()">
 <span>Lot start:</span><input type="number" id="lotStart" value="0.05" step="0.01" onchange="load()">
 <span>Lot cap:</span><input type="number" id="lotCap" value="0.50" step="0.05" onchange="load()">
+<span>Flat%:</span><input type="number" id="flatPct" value="1.5" step="0.1" onchange="load()">
 </div>
-<div class="hd"><span>📋 Savdolar</span><span id="lc">0</span></div>
+<div class="hd"><span>📋 Savdolar (Flat + Structure + Engulfing)</span><span id="lc">0</span></div>
 <div class="lst" id="lst"><div style="padding:20px;text-align:center;color:#94a3b8">Kutilmoqda...</div></div>
 </div>
 
@@ -88,14 +89,15 @@ body{background:#0a0b0f;color:#e2e8f0}
 // ============================================================
 // SOZLAMALAR
 // ============================================================
-const CFG = { sym: 'BTCUSDT', tf: '15m', mo: 3 };
+const CFG = { sym: 'BTCUSDT', tf: '5m', mo: 3 };
 
 function getBal(){ return parseFloat(document.getElementById('balInput').value) || 1000; }
 function getSLBuf(){ return parseFloat(document.getElementById('slBufInput').value) || 10; }
 function getLotStart(){ return parseFloat(document.getElementById('lotStart').value) || 0.05; }
 function getLotCap(){ return parseFloat(document.getElementById('lotCap').value) || 0.50; }
+function getFlatPct(){ return parseFloat(document.getElementById('flatPct').value) / 100 || 0.015; }
 
-let chart, series;
+let chart, series, flatLine;
 
 function S(el, type, val){
   el.parentNode.querySelectorAll('.b').forEach(b => b.classList.remove('on'));
@@ -153,18 +155,70 @@ async function fetchCandles(){
 }
 
 // ============================================================
-// PURE PRICE ACTION — 2 CANDLE ENGULFING
+// FLAT ZONE DETECTION — Pure Price Action
+// ============================================================
+// Flat = oxirgi 30 sham range < X% narx
+function isFlatZone(cd, idx){
+  const lookback = 30;
+  if(idx < lookback) return false;
+
+  let hi = -Infinity, lo = Infinity;
+  for(let i = idx - lookback + 1; i <= idx; i++){
+    hi = Math.max(hi, cd[i].high);
+    lo = Math.min(lo, cd[i].low);
+  }
+  const range = hi - lo;
+  const price = cd[idx].close;
+  const pct = range / price;
+
+  return pct < getFlatPct();  // Flat agar range kichik bo'lsa
+}
+
+// ============================================================
+// MARKET STRUCTURE — Local Swing High/Low
+// ============================================================
+function findSwingHigh(cd, from, to){
+  let h = -Infinity, idx = -1;
+  for(let i = from; i <= to && i < cd.length; i++){
+    if(cd[i].high > h){ h = cd[i].high; idx = i; }
+  }
+  return { value: h, idx };
+}
+function findSwingLow(cd, from, to){
+  let l = Infinity, idx = -1;
+  for(let i = from; i <= to && i < cd.length; i++){
+    if(cd[i].low < l){ l = cd[i].low; idx = i; }
+  }
+  return { value: l, idx };
+}
+
+// Structure break: narx oldingi swing high/low ni buzdi
+function structureBreak(cd, idx, type){
+  const lookback = 20;
+  if(idx < lookback * 2) return false;
+
+  if(type === 'bull'){
+    // Oldingi swing high (idx-20 dan idx-5 gacha)
+    const prevHigh = findSwingHigh(cd, idx - lookback, idx - 5);
+    if(prevHigh.value === -Infinity) return false;
+    // Hozirgi sham uning yuqorisini buzdi
+    return cd[idx].close > prevHigh.value;
+  } else {
+    const prevLow = findSwingLow(cd, idx - lookback, idx - 5);
+    if(prevLow.value === Infinity) return false;
+    return cd[idx].close < prevLow.value;
+  }
+}
+
+// ============================================================
+// 2-CANDLE ENGULFING
 // ============================================================
 function isBull(p2, p1, c){
-  // cur YASHIL
   if(c.close <= c.open) return false;
-  // prev2 va prev1 QIZIL
   if(p1.close >= p1.open) return false;
   if(p2.close >= p2.open) return false;
-  // 2 shamning eng yuqori HIGH va eng past LOW
   const maxHigh = Math.max(p1.high, p2.high);
   const minLow  = Math.min(p1.low, p2.low);
-  // Yashil sham ikkalasini TO'LIQ yutadi
   return c.low <= minLow && c.close > maxHigh;
 }
 
@@ -178,18 +232,17 @@ function isBear(p2, p1, c){
 }
 
 // ============================================================
-// DINAMIK LOT — 0.05 → 0.50 (har 10 wins uchun +0.05)
+// DINAMIK LOT — 0.05 → 0.50
 // ============================================================
 function getDynamicLot(wins){
   const start = getLotStart();
   const cap = getLotCap();
-  const step = 0.05;
-  const lot = start + Math.floor(wins / 10) * step;
+  const lot = start + Math.floor(wins / 10) * 0.05;
   return Math.min(lot, cap);
 }
 
 // ============================================================
-// ASOSIY LOGIKA — TRAILING STOP (1R→BE, 2R→1R, 3R→2R...)
+// ASOSIY LOGIKA
 // ============================================================
 function calcTrades(cd){
   const trades = [];
@@ -202,12 +255,12 @@ function calcTrades(cd){
   let losses = 0;
   let bes = 0;
 
-  for(let i = 4; i < cd.length; i++){
+  for(let i = 5; i < cd.length; i++){
     const c = cd[i];
 
     // ===== POZITSIYA BOSHQARUVI =====
     if(pos){
-      // 1️⃣ AVVAL: eski SL tegilganini tekshirish (konservativ)
+      // SL tegilganini tekshirish
       let exit = 0, exitR = 0, closed = false;
       if(pos.type === 'B' && c.low <= pos.sl){
         exit = pos.sl;
@@ -230,17 +283,13 @@ function calcTrades(cd){
         trades.push(pos);
         pos = null;
       } else {
-        // 2️⃣ KEYIN: yangi trailing darajani yangilash
+        // Trailing stop yangilash
         let maxR;
-        if(pos.type === 'B'){
-          maxR = (c.high - pos.entry) / pos.slDist;
-        } else {
-          maxR = (pos.entry - c.low) / pos.slDist;
-        }
+        if(pos.type === 'B') maxR = (c.high - pos.entry) / pos.slDist;
+        else maxR = (pos.entry - c.low) / pos.slDist;
 
-        // Ko'tarilish darajasi: R=1 → BE (0R), R=2 → 1R, R=3 → 2R, R=4 → 3R, R=5 → 4R
         if(maxR >= 1){
-          const trailR = Math.floor(maxR) - 1;  // 0, 1, 2, 3, 4...
+          const trailR = Math.floor(maxR) - 1;
           let newSL;
           if(pos.type === 'B'){
             newSL = pos.entry + trailR * pos.slDist;
@@ -255,33 +304,43 @@ function calcTrades(cd){
 
     if(pos) continue;
 
-    // ===== YANGI SIGNAL =====
+    // ===== FLAT ZONE TEKSHIRUVI =====
     const idx = i - 1;
+    if(!isFlatZone(cd, idx)) continue;
+
     const cl = cd[idx];
     const p1 = cd[idx - 1];
     const p2 = cd[idx - 2];
     if(!cl || !p1 || !p2) continue;
 
-    // 2 sham engulfing
+    // ===== ENGULFING + STRUCTURE BREAK =====
     let type = null;
-    if(isBull(p2, p1, cl)) type = 'B';
-    else if(isBear(p2, p1, cl)) type = 'S';
+
+    // BUY: 2-candle engulfing + Bullish structure break (HH)
+    if(isBull(p2, p1, cl) && structureBreak(cd, idx, 'bull')){
+      type = 'B';
+    }
+    // SELL: 2-candle engulfing + Bearish structure break (LL)
+    else if(isBear(p2, p1, cl) && structureBreak(cd, idx, 'bear')){
+      type = 'S';
+    }
+
     if(!type) continue;
 
-    // SL: 2 shamning ekstremumi + buffer
+    // SL: 2 shamning ekstremumi
     let slPrice, slDist;
     if(type === 'B'){
-      slPrice = Math.min(p1.low, p2.low) - buf;
+      slPrice = Math.min(p1.low, p2.low) - buf * (cl.close / 100000);  // Dynamic buffer
       slDist = cl.close - slPrice;
     } else {
-      slPrice = Math.max(p1.high, p2.high) + buf;
+      slPrice = Math.max(p1.high, p2.high) + buf * (cl.close / 100000);
       slDist = slPrice - cl.close;
     }
     if(slDist <= 0) continue;
 
     // Dinamik lot
     const lot = getDynamicLot(wins);
-    const riskPerR = lot * 100;  // $100 per 1.0 lot per R
+    const riskPerR = lot * 100;
 
     pos = {
       time: cl.time,
@@ -291,7 +350,8 @@ function calcTrades(cd){
       initialSL: slPrice,
       slDist,
       lot,
-      riskPerR
+      riskPerR,
+      inFlat: true
     };
   }
 
@@ -349,7 +409,7 @@ function stats(result){
 
   const L = document.getElementById('lst');
   if(!trades.length){
-    L.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8">Signal yo\'q</div>';
+    L.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8">Flat + Engulfing signal yo\'q</div>';
     return;
   }
 
@@ -389,7 +449,7 @@ async function load(){
 
     const result = calcTrades(cd);
 
-    // Markerlar
+    // Flat zone markerlari
     const markers = result.trades.map(t => ({
       time: t.time,
       position: t.type === 'B' ? 'belowBar' : 'aboveBar',
