@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Engulfing · 2-Candle</title>
+<title>Engulfing · 2-Candle + Dynamic RR</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 :root{--bg:#0a0b0f;--srf:#131620;--srf2:#1a1e2e;--silver:#cbd5e1;--silver-b:#e2e8f0;
@@ -37,7 +37,7 @@ border-color:var(--silver-d);box-shadow:0 0 12px rgba(203,213,225,.2)}
 .chip:active{transform:scale(.95)}
 .div{width:1px;background:var(--brd2);margin:0 4px;flex-shrink:0}
 
-#chart{height:45vh;background:var(--bg);position:relative}
+#chart{height:42vh;background:var(--bg);position:relative}
 .loading{position:absolute;inset:0;display:flex;justify-content:center;align-items:center;
 background:rgba(10,11,15,.9);z-index:5;font-size:12px;color:var(--mut)}
 .loading.hide{display:none}
@@ -78,8 +78,6 @@ display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:10px}
 .settings input{width:50px;padding:5px 6px;background:var(--bg);border:1px solid var(--brd2);
 border-radius:5px;color:var(--silver-b);font-size:10px;font-family:monospace;text-align:center;font-weight:600}
 .settings input:focus{outline:0;border-color:var(--silver-d)}
-.settings label{display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--mut)}
-.settings input[type=checkbox]{width:16px;height:16px;accent-color:var(--green)}
 
 .info{padding:12px;background:var(--srf);padding-bottom:30px}
 .log-title{font-size:10px;color:var(--mut);margin-bottom:8px;text-transform:uppercase;
@@ -115,7 +113,7 @@ font-size:12px;font-weight:600;cursor:pointer;margin-top:10px}
 <body>
 
 <div class="hdr">
-  <h1>🎯 Engulfing · 2-Candle (toza)</h1>
+  <h1>🎯 Engulfing · 2-Candle · Dynamic RR</h1>
   <div class="status" id="status">Ulanmoqda...</div>
 </div>
 
@@ -129,7 +127,6 @@ font-size:12px;font-weight:600;cursor:pointer;margin-top:10px}
   <div class="chip" data-tf="5m" onclick="setTF(this,'5m')">M5</div>
   <div class="chip active" data-tf="15m" onclick="setTF(this,'15m')">M15</div>
   <div class="chip" data-tf="1h" onclick="setTF(this,'1h')">H1</div>
-  <div class="chip" data-tf="4h" onclick="setTF(this,'4h')">H4</div>
   <div class="div"></div>
   <div class="chip" data-mo="1" onclick="setMonths(this,1)">1oy</div>
   <div class="chip" data-mo="3" onclick="setMonths(this,3)">3oy</div>
@@ -172,22 +169,22 @@ font-size:12px;font-weight:600;cursor:pointer;margin-top:10px}
   <div class="item"><span>Risk%:</span><input type="number" id="riskPct" value="2" step="0.5" min="0.1"></div>
   <div class="item"><span>Balans:</span><input type="number" id="balance" value="1000" step="100"></div>
   <div class="item"><span>SLbuf:</span><input type="number" id="slBuffer" value="10" step="5"></div>
-  <div class="item"><span>RR:</span><input type="number" id="rrRatio" value="2" step="0.5" min="0.5"></div>
-  <label><input type="checkbox" id="trendFilter"> Trend filtri (ixtiyoriy, indikator kerak)</label>
 </div>
 
 <div class="info">
-  <div class="log-title"><span>📋 Savdolar jurnali · Har bitta 2-svechali engulfing</span><span class="count" id="logCount">0</span></div>
+  <div class="log-title"><span>📋 Savdolar · 1 sham 2 shamni yutadi · Dinamik RR</span><span class="count" id="logCount">0</span></div>
   <div class="log" id="log"><div class="empty">Signallar kutilmoqda...</div></div>
   <button class="btn" onclick="loadData()">🔄 Qayta hisoblash</button>
 </div>
 
 <script>
+// ============================================================
+// KONFIGURATSIYA
+// ============================================================
 const CFG = {
   symbol: 'BTCUSDT',
   interval: '15m',
   historyMonths: 6,
-  limit: 1000,
   postLossRisk: 0.5,
   postWinRisk: 1.2,
   absMaxRisk: 4.0,
@@ -198,11 +195,12 @@ const CFG = {
 function getRisk(){ return parseFloat(document.getElementById('riskPct').value)||2; }
 function getBalance(){ return parseFloat(document.getElementById('balance').value)||1000; }
 function getSLBuf(){ return parseFloat(document.getElementById('slBuffer').value)||10; }
-function getRR(){ return parseFloat(document.getElementById('rrRatio').value)||2; }
-function useTrend(){ return document.getElementById('trendFilter').checked; }
 
 let chart, candleSeries;
 
+// ============================================================
+// CHART
+// ============================================================
 function initChart(){
   const el = document.getElementById('chart');
   chart = LightweightCharts.createChart(el, {
@@ -223,7 +221,9 @@ function initChart(){
   window.addEventListener('resize', ()=>chart.applyOptions({width:el.clientWidth,height:el.clientHeight}));
 }
 
-// Binance bir so'rovda max 1000 sham beradi - kerakli davrni "sahifalab" to'liq yig'amiz
+// ============================================================
+// MA'LUMOT YUKLASH
+// ============================================================
 async function fetchAllCandles(symbol, interval, monthsBack){
   const now = Date.now();
   let curStart = now - monthsBack * 30 * 24 * 60 * 60 * 1000;
@@ -251,7 +251,7 @@ async function fetchAllCandles(symbol, interval, monthsBack){
     all = all.concat(mapped);
 
     const loadingEl = document.getElementById('loading');
-    if(loadingEl) loadingEl.innerHTML = '<div class="spinner"></div><span>Yuklanmoqda... ' + all.length + ' sham (' + guard + '-so\'rov)</span>';
+    if(loadingEl) loadingEl.innerHTML = '<div class="spinner"></div><span>Yuklanmoqda... ' + all.length + ' sham</span>';
 
     const lastMs = raw[raw.length - 1][0];
     curStart = lastMs + 1;
@@ -284,7 +284,6 @@ async function loadData(){
     if(candles.length === 0) throw new Error('Ma\'lumot topilmadi');
 
     candleSeries.setData(candles);
-
     const result = findTrades(candles);
 
     const markers = result.trades.map(t=>({
@@ -311,39 +310,66 @@ async function loadData(){
   }
 }
 
-function isBullishEngulfing(prev, cur){
-  const prevBearish = prev.close < prev.open;
-  const curBullish  = cur.close  > cur.open;
-  const bodyEngulf  = cur.open <= prev.close && cur.close >= prev.open;
-  return prevBearish && curBullish && bodyEngulf;
+// ============================================================
+// ENGULFING — 1 SHAM 2 SHAMNI YUTADI
+// ============================================================
+// prev2 = 2 sham oldin, prev1 = 1 sham oldin, cur = signal sham
+function isBullishEngulfing(prev2, prev1, cur){
+  // cur YASHIL
+  if(cur.close <= cur.open) return false;
+  // prev1 va prev2 QIZIL
+  if(prev1.close >= prev1.open) return false;
+  if(prev2.close >= prev2.open) return false;
+
+  // 2 qizil shamning eng yuqori OPEN va eng past CLOSE
+  const maxOpen  = Math.max(prev1.open, prev2.open);
+  const minClose = Math.min(prev1.close, prev2.close);
+
+  // Yashil sham ikkalasini to'liq yutadi
+  return cur.open <= minClose && cur.close >= maxOpen;
 }
 
-function isBearishEngulfing(prev, cur){
-  const prevBullish = prev.close > prev.open;
-  const curBearish  = cur.close  < cur.open;
-  const bodyEngulf  = cur.open >= prev.close && cur.close <= prev.open;
-  return prevBullish && curBearish && bodyEngulf;
+function isBearishEngulfing(prev2, prev1, cur){
+  // cur QIZIL
+  if(cur.close >= cur.open) return false;
+  // prev1 va prev2 YASHIL
+  if(prev1.close <= prev1.open) return false;
+  if(prev2.close <= prev2.open) return false;
+
+  const maxClose = Math.max(prev1.close, prev2.close);
+  const minOpen  = Math.min(prev1.open, prev2.open);
+
+  // Qizil sham ikkalasini to'liq yutadi
+  return cur.open >= maxClose && cur.close <= minOpen;
 }
 
-function detectTrend(candles, idx){
-  if(idx < 20) return 0;
-  let sumHigh = 0, sumLow = 0;
-  for(let i = idx - 20; i < idx; i++){
-    sumHigh += candles[i].high;
-    sumLow += candles[i].low;
-  }
-  const mid = (sumHigh/20 + sumLow/20) / 2;
-  const curPrice = candles[idx].close;
-  if(curPrice > mid) return 1;
-  if(curPrice < mid) return -1;
-  return 0;
+// ============================================================
+// DINAMIK RR — sham kuchiga qarab
+// ============================================================
+function getDynamicRR(cur){
+  const body = Math.abs(cur.close - cur.open);
+  const range = cur.high - cur.low;
+  if(range <= 0) return 2;
+
+  const bodyRatio = body / range;
+
+  // Body 85%+ → RR 1:5 (juda kuchli)
+  if(bodyRatio >= 0.85) return 5;
+  // Body 70%+ → RR 1:3 (kuchli)
+  if(bodyRatio >= 0.70) return 3;
+  // Body 55%+ → RR 1:2 (oddiy)
+  if(bodyRatio >= 0.55) return 2;
+  // Juda sust (doji) → RR 1:1.5 (kam)
+  return 1.5;
 }
 
+// ============================================================
+// ASOSIY LOGIKA
+// ============================================================
 function findTrades(candles){
   const trades = [];
   const startBalance = getBalance();
   const slBuf = getSLBuf();
-  const rr = getRR();
   const pipSize = getPipSize(CFG.symbol);
 
   let balance = startBalance;
@@ -356,9 +382,11 @@ function findTrades(candles){
 
   if(candles.length < 5) return { trades: [], signals: 0 };
 
-  for(let i = 2; i < candles.length; i++){
+  // i=3 dan: 2 ta yutilgan + 1 yutuvchi
+  for(let i = 3; i < candles.length; i++){
     const now = candles[i].time;
 
+    // === POZITSIYANI YOPISH ===
     if(inPos && cur){
       const c = candles[i];
       let closed = false, exitP = 0, result = null;
@@ -389,45 +417,54 @@ function findTrades(candles){
     if(now < pauseUntil) continue;
     if(inPos) continue;
 
+    // === SIGNAL TEKSHIRUVI ===
     const idx = i - 1;
-    const prev = candles[idx-1];
-    const cl = candles[idx];
-    if(!cl || !prev) continue;
-
-    let trend = 0;
-    if(useTrend()){
-      trend = detectTrend(candles, idx);
-      if(trend === 0) continue;
-    }
+    const cl = candles[idx];              // signal sham
+    const prev1 = candles[idx - 1];       // 1-yutilgan
+    const prev2 = candles[idx - 2];       // 2-yutilgan
+    if(!cl || !prev1 || !prev2) continue;
 
     let sigType = null;
-    if(isBullishEngulfing(prev, cl)){
-      if(!useTrend() || trend === 1) sigType = 'BUY';
-    }
-    if(!sigType && isBearishEngulfing(prev, cl)){
-      if(!useTrend() || trend === -1) sigType = 'SELL';
+    if(isBullishEngulfing(prev2, prev1, cl)){
+      sigType = 'BUY';
+    } else if(isBearishEngulfing(prev2, prev1, cl)){
+      sigType = 'SELL';
     }
     if(!sigType) continue;
     signals++;
 
+    // === SL: 2 shamning ekstremumi ===
     let slPrice, slDist;
-    if(sigType === 'BUY'){ slPrice = prev.low - slBuf * pipSize; slDist = cl.close - slPrice; }
-    else { slPrice = prev.high + slBuf * pipSize; slDist = slPrice - cl.close; }
+    if(sigType === 'BUY'){
+      slPrice = Math.min(prev1.low, prev2.low) - slBuf * pipSize;
+      slDist = cl.close - slPrice;
+    } else {
+      slPrice = Math.max(prev1.high, prev2.high) + slBuf * pipSize;
+      slDist = slPrice - cl.close;
+    }
     if(slDist <= 0) continue;
 
+    // === DINAMIK RR ===
+    const rr = getDynamicRR(cl);
+
+    // === TP ===
     let tpPrice = sigType === 'BUY' ? cl.close + slDist * rr : cl.close - slDist * rr;
 
+    // === RISK ===
     let riskPct = getRisk();
     if(lastResult === 0) riskPct *= CFG.postLossRisk;
     else if(lastResult === 1) riskPct *= CFG.postWinRisk;
     if(riskPct > CFG.absMaxRisk) riskPct = CFG.absMaxRisk;
     const riskMoney = balance * riskPct / 100;
 
-    cur = { time: cl.time, type: sigType, entry: cl.close, sl: slPrice, tp: tpPrice,
-            rr: rr, slDist: slDist, riskMoney: riskMoney, riskPct: riskPct };
+    cur = {
+      time: cl.time, type: sigType, entry: cl.close, sl: slPrice, tp: tpPrice,
+      rr: rr, slDist: slDist, riskMoney: riskMoney, riskPct: riskPct
+    };
     inPos = true;
   }
 
+  // Oxirgi ochiq pozitsiyani yopish
   if(cur){
     const lastCandle = candles[candles.length - 1];
     const exitP = lastCandle.close;
@@ -443,6 +480,9 @@ function findTrades(candles){
   return { trades, signals };
 }
 
+// ============================================================
+// PIP SIZE
+// ============================================================
 function getPipSize(sym){
   if(sym === 'BTCUSDT') return 1;
   if(sym === 'ETHUSDT') return 0.5;
@@ -452,6 +492,9 @@ function getPipSize(sym){
   return 0.01;
 }
 
+// ============================================================
+// STATISTIKA
+// ============================================================
 function calculateStats(trades){
   let totalPnl = 0, wins = 0, losses = 0;
   let buyPnl = 0, sellPnl = 0, grossWin = 0, grossLoss = 0;
@@ -501,6 +544,9 @@ function calculateStats(trades){
   document.getElementById('maxDD').innerText = maxDD.toFixed(1) + '$';
 }
 
+// ============================================================
+// LOG
+// ============================================================
 function renderLog(trades){
   const log = document.getElementById('log');
   document.getElementById('logCount').innerText = trades.length;
@@ -523,6 +569,9 @@ function renderLog(trades){
   }).join('');
 }
 
+// ============================================================
+// SYMBOL / TF
+// ============================================================
 function setSym(el, sym){
   document.querySelectorAll('[data-sym]').forEach(c=>c.classList.remove('active'));
   el.classList.add('active'); CFG.symbol = sym; loadData();
@@ -532,16 +581,16 @@ function setTF(el, tf){
   el.classList.add('active'); CFG.interval = tf; loadData();
 }
 
+// ============================================================
+// START
+// ============================================================
 window.addEventListener('DOMContentLoaded', ()=>{
   initChart();
   loadData();
-  ['riskPct','balance','slBuffer','rrRatio'].forEach(id=>{
-    document.getElementById(id).addEventListener('change', loadData);
-  });
-  ['trendFilter'].forEach(id=>{
+  ['riskPct','balance','slBuffer'].forEach(id=>{
     document.getElementById(id).addEventListener('change', loadData);
   });
 });
 </script>
 </body>
-  </html>
+</html>
