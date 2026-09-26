@@ -1,6 +1,6 @@
 # ============================================================
-# EngulfingTrend Bot v5.10.0 — 2C BOT + TREND BOT (mustaqil)
-# 2C BOT: o'zgarmagan | TREND BOT: 3 usul voting
+# EngulfingTrend Bot v5.9.3 — DUAL ENTRY + BODY ENGULFING + CONFIRMATION
+# A: 1:1 da 100% yopiladi | B: har 2R trailing (4R->SL2, 6R->SL4, 8R->SL6, 10R->SL8), max 10R cap
 # ============================================================
 import os
 import asyncio
@@ -30,25 +30,21 @@ CONFIG = {
     'LOT_MIN':    float(os.getenv('LOT_MIN', '0.001')),
     'LOT_MAX':    float(os.getenv('LOT_MAX', '2.0')),
     'MIN_RISK_USD': float(os.getenv('MIN_RISK_USD', '2.0')),
-    'MAX_OPEN_POS': int(os.getenv('MAX_OPEN_POS', '20')),
-    'PRELOAD_CANDLES': int(os.getenv('PRELOAD_CANDLES', '250')),
+    'MAX_OPEN_POS': int(os.getenv('MAX_OPEN_POS', '10')),
+    'PRELOAD_CANDLES': int(os.getenv('PRELOAD_CANDLES', '100')),
     'SL_BUF':     float(os.getenv('SL_BUF', '10')),
 
     'DUAL_ENTRY': os.getenv('DUAL_ENTRY', 'True') == 'True',
     'REALTIME_ENTRY': os.getenv('REALTIME_ENTRY', 'True') == 'True',
     'CONFIRM_SECONDS': float(os.getenv('CONFIRM_SECONDS', '2.5')),
 
-    # === YANGI: TREND BOT ===
-    'TREND_BOT_ENABLED': os.getenv('TREND_BOT_ENABLED', 'True') == 'True',
-    'TREND_LOOKBACK': int(os.getenv('TREND_LOOKBACK', '20')),
-
     # === Pozitsiya A ===
     'BE_AT_R':    float(os.getenv('BE_AT_R', '1.0')),
-    'TP1_AT_R':   float(os.getenv('TP1_AT_R', '1.0')),
+    'TP1_AT_R':   float(os.getenv('TP1_AT_R', '1.0')),      # A: 1:1 da 100% yopiladi
 
-    # === Pozitsiya B, C, D ===
-    'TRAIL_STEP': float(os.getenv('TRAIL_STEP', '2.0')),
-    'MAX_TRAIL_R': float(os.getenv('MAX_TRAIL_R', '10.0')),
+    # === Pozitsiya B ===
+    'TRAIL_STEP': float(os.getenv('TRAIL_STEP', '2.0')),    # har 2R qadamda: 4->SL2, 6->SL4, 8->SL6, 10->SL8
+    'MAX_TRAIL_R': float(os.getenv('MAX_TRAIL_R', '10.0')), # 10R ga yetganda pozitsiya yopiladi (xavfsizlik)
 
     'COMM_RATE':  float(os.getenv('COMM_RATE', '0.0005')),
 
@@ -77,16 +73,11 @@ class TG:
     def __init__(self, token, chat_id):
         self.bot = Bot(token=token) if token else None
         self.chat_id = chat_id
-        self.last_send = 0
 
     async def send(self, msg):
         if not self.bot: return
-        now = time.time()
-        if now - self.last_send < 1:
-            await asyncio.sleep(1)
         try:
             await self.bot.send_message(chat_id=self.chat_id, text=msg, parse_mode=ParseMode.HTML)
-            self.last_send = time.time()
         except Exception as e:
             log.error(f"TG: {e}")
 
@@ -146,7 +137,7 @@ def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None
             mark_point(t['time'], t['entry'], t['type'], f"{t.get('engulfCandles','')}C-{t.get('part','')}")
         if open_positions:
             for p in open_positions:
-                mark_point(p['time'], p['entry'], p['type'], f"{p.get('engulfCandles','')}C-{p.get('part','')}")
+                mark_point(p['time'], p['entry'], p['type'], f"{p.get('engulfCandles','')}C-{p.get('part','')} (ochiq)")
 
         ax.set_title(f'{symbol} · {interval} {suffix}', color='#e2e8f0', fontsize=14, pad=15)
         ax.tick_params(colors='#94a3b8', labelsize=9)
@@ -168,40 +159,28 @@ def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None
 class Engine:
     def __init__(self, symbol):
         self.symbol = symbol
-        # UMUMIY
         self.balance = CONFIG['BALANCE']
         self.initial = CONFIG['BALANCE']
+        self.completedTrades = 0
+        self.wins = 0; self.losses = 0; self.bes = 0
+        self.tp1_hits = 0; self.trail_steps = 0; self.trail_caps = 0
+        self.rt_entries = 0
+        self.rt_confirmed = 0
+        self.rt_rejected = 0
         self.positions = []
         self.candles = []
         self.trades = []
         self.total_comm = 0.0
         self.gross_pnl = 0.0
 
-        # 2C BOT (o'zgarmagan)
-        self.completedTrades = 0
-        self.wins = 0; self.losses = 0; self.bes = 0
-        self.tp1_hits = 0; self.trail_steps = 0; self.trail_caps = 0
-        self.rt_entries = 0; self.rt_confirmed = 0; self.rt_rejected = 0
-        self.stats_2c = {'wins': 0, 'losses': 0, 'net': 0.0}
-        self.pending_2c = None
-        self.last_signal_2c = None
-
-        # TREND BOT (yangi)
-        self.trend_completed = 0
-        self.trend_wins = 0; self.trend_losses = 0; self.trend_be = 0
-        self.trend_tp1 = 0; self.trend_caps = 0
-        self.trend_rt_entries = 0; self.trend_rt_confirmed = 0; self.trend_rt_rejected = 0
-        self.trend_stats = {'wins': 0, 'losses': 0, 'net': 0.0}
-        self.pending_trend = None
-        self.last_signal_trend = None
-        self.trend_methods = {'HH/HL': '', 'S/R': '', 'BigC': ''}
-        self.trend_votes = {'up': 0, 'down': 0}
-
-        # Umumiy
         self.last_candle_time = None
+        self.stats_2c = {'wins': 0, 'losses': 0, 'net': 0.0}
         self.day_start_balance = CONFIG['BALANCE']
         self.day_key = None
         self.trading_paused = False
+        self.last_signal_time = None
+
+        self.pending_signal = None
 
     # ----------------------------------------------------------
     def calcLot(self, slDist, price):
@@ -218,6 +197,7 @@ class Engine:
 
     # ----------------------------------------------------------
     def checkEngulfing(self, cd, idx):
+        """2-candle engulfing — FAQAT BODY (open/close), fitil (high/low) hisobga olinmaydi."""
         if idx < 2: return None
         cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
 
@@ -226,91 +206,64 @@ class Engine:
         body_top_2 = max(p1_top, p2_top)
         body_bot_2 = min(p1_bot, p2_bot)
 
-        bull2 = (cur['close'] > cur['open'] and p1['close'] < p1['open'] and p2['close'] < p2['open']
-                 and cur['open'] < body_bot_2 and cur['close'] > body_top_2)
-        bear2 = (cur['close'] < cur['open'] and p1['close'] > p1['open'] and p2['close'] > p2['open']
-                 and cur['open'] > body_top_2 and cur['close'] < body_bot_2)
-
+        bull2 = (
+            cur['close'] > cur['open']
+            and p1['close'] < p1['open']
+            and p2['close'] < p2['open']
+            and cur['open']  < body_bot_2
+            and cur['close'] > body_top_2
+        )
+        bear2 = (
+            cur['close'] < cur['open']
+            and p1['close'] > p1['open']
+            and p2['close'] > p2['open']
+            and cur['open']  > body_top_2
+            and cur['close'] < body_bot_2
+        )
         if bull2: return {'type': 'B', 'candles': 2}
         if bear2: return {'type': 'S', 'candles': 2}
         return None
 
-    # ============================================================
-    # YANGI: TREND 3 USUL
-    # ============================================================
-    def _t_hh_hl(self):
-        if len(self.candles) < 10: return 'WEAK'
-        lb = CONFIG['TREND_LOOKBACK']
-        h = [c['high'] for c in self.candles[-lb:]]
-        l = [c['low'] for c in self.candles[-lb:]]
-        if h[-1] > h[-3] > h[-5] > h[-7] and l[-1] > l[-3] > l[-5] > l[-7]:
-            return 'STRONG_UP'
-        if h[-1] < h[-3] < h[-5] < h[-7] and l[-1] < l[-3] < l[-5] < l[-7]:
-            return 'STRONG_DOWN'
-        return 'WEAK'
-
-    def _t_sr(self):
-        if len(self.candles) < 20: return 'WEAK'
-        lb = CONFIG['TREND_LOOKBACK']
-        f = self.candles[-lb:-lb//2]; s = self.candles[-lb//2:]
-        if not f or not s: return 'WEAK'
-        fh = max(c['high'] for c in f); fl = min(c['low'] for c in f)
-        sh = max(c['high'] for c in s); sl = min(c['low'] for c in s)
-        if sh > fh and sl > fl: return 'STRONG_UP'
-        if sh < fh and sl < fl: return 'STRONG_DOWN'
-        return 'WEAK'
-
-    def _t_big(self):
-        if len(self.candles) < 20: return 'WEAK'
-        lb = CONFIG['TREND_LOOKBACK']
-        recent = self.candles[-5:]
-        all_c = self.candles[-lb:]
-        if not all_c: return 'WEAK'
-        avg = sum(abs(c['close']-c['open']) for c in all_c) / len(all_c)
-        if avg <= 0: return 'WEAK'
-        bg = sum(1 for c in recent if c['close'] > c['open'] and abs(c['close']-c['open']) > avg*1.5)
-        br = sum(1 for c in recent if c['close'] < c['open'] and abs(c['close']-c['open']) > avg*1.5)
-        if bg >= 3: return 'STRONG_UP'
-        if br >= 3: return 'STRONG_DOWN'
-        return 'WEAK'
-
-    def detect_trend(self):
-        self.trend_methods['HH/HL'] = self._t_hh_hl()
-        self.trend_methods['S/R']   = self._t_sr()
-        self.trend_methods['BigC']  = self._t_big()
-        vu = sum(1 for v in self.trend_methods.values() if v == 'STRONG_UP')
-        vd = sum(1 for v in self.trend_methods.values() if v == 'STRONG_DOWN')
-        self.trend_votes = {'up': vu, 'down': vd}
-        if vu >= 2 and vu > vd: return 'STRONG_UP', vu
-        if vd >= 2 and vd > vu: return 'STRONG_DOWN', vd
-        return 'WEAK', max(vu, vd)
-
     # ----------------------------------------------------------
-    def openLocal(self, signal, candle, part, bot_source='2C'):
+    def openLocal(self, signal, candle, part='A'):
         cur = candle
         buf = CONFIG['SL_BUF'] * (cur['close'] / 100000)
+
         if signal['type'] == 'B':
             slPrice = cur['low'] - buf
             slDist = cur['close'] - slPrice
         else:
             slPrice = cur['high'] + buf
             slDist = slPrice - cur['close']
+
         if slDist <= 0: return None
+
         lot = self.calcLot(slDist, cur['close'])
         if lot <= 0: return None
+
         return {
-            'time': cur['time'], 'type': signal['type'],
+            'time': cur['time'],
+            'type': signal['type'],
             'engulfCandles': signal['candles'],
-            'entry': cur['close'], 'sl': slPrice, 'initialSL': slPrice,
-            'slDist': slDist, 'lot': lot, 'riskPerR': lot * slDist,
-            'beSet': False, 'tp1Done': False, 'lockR': 0,
-            'gross': 0.0, 'commission': 0.0, 'part': part,
-            'bot_source': bot_source,
+            'entry': cur['close'],
+            'sl': slPrice,
+            'initialSL': slPrice,
+            'slDist': slDist,
+            'lot': lot,
+            'riskPerR': lot * slDist,
+            'balance_at_entry': self.balance,
+            'beSet': False,
+            'tp1Done': False,
+            'lockR': 0,
+            'gross': 0.0,
+            'commission': 0.0,
+            'part': part,
             'is_realtime': False,
         }
 
     # ----------------------------------------------------------
     def manageLocal(self, p, candle):
+        """Har bir pozitsiyani (A yoki B) alohida boshqaradi."""
         sl_hit = False; exit_price = 0; exitR = 0
         if p['type'] == 'B' and candle['low'] <= p['sl']:
             sl_hit = True; exit_price = p['sl']
@@ -322,36 +275,45 @@ class Engine:
         if sl_hit:
             p['exit'] = exit_price
             p['exitR'] = exitR
-            if p['beSet'] and p.get('lockR', 0) == 0: p['closeReason'] = 'BE'
-            elif p.get('lockR', 0) > 0: p['closeReason'] = f"Trail {p['lockR']:.1f}R"
-            else: p['closeReason'] = 'SL'
+            if p['beSet'] and p.get('lockR', 0) == 0:
+                p['closeReason'] = 'BE'
+            elif p.get('lockR', 0) > 0:
+                p['closeReason'] = f"Trail {p['lockR']:.1f}R"
+            else:
+                p['closeReason'] = 'SL'
             p['gross'] += exitR * p['riskPerR']
             return True
 
-        if p['type'] == 'B': maxR = (candle['high'] - p['entry']) / p['slDist']
-        else: maxR = (p['entry'] - candle['low']) / p['slDist']
+        if p['type'] == 'B':
+            maxR = (candle['high'] - p['entry']) / p['slDist']
+        else:
+            maxR = (p['entry'] - candle['low']) / p['slDist']
 
+        # BE @ 1:1 — ikkala pozitsiya uchun ham
         if maxR >= CONFIG['BE_AT_R'] and not p['beSet']:
             p['sl'] = p['entry']
             p['beSet'] = True
 
+        # ============ POZITSIYA A — 1:1 da 100% yopiladi ============
         if p.get('part') == 'A':
             if maxR >= CONFIG['TP1_AT_R'] and not p.get('tp1Done'):
                 if p['type'] == 'B':
                     exit_a = p['entry'] + CONFIG['TP1_AT_R'] * p['slDist']
                 else:
                     exit_a = p['entry'] - CONFIG['TP1_AT_R'] * p['slDist']
+
                 p['exit'] = exit_a
                 p['exitR'] = CONFIG['TP1_AT_R']
                 p['closeReason'] = 'TP1_A (1:1)'
                 p['gross'] += CONFIG['TP1_AT_R'] * p['riskPerR']
                 p['tp1Done'] = True
-                if p.get('bot_source') == 'TREND': self.trend_tp1 += 1
-                else: self.tp1_hits += 1
+                self.tp1_hits += 1
                 return True
             return False
 
-        if p.get('part') in ['B', 'C', 'D']:
+        # ============ POZITSIYA B — har 2R trailing: 4->SL2, 6->SL4, 8->SL6, 10->SL8 ============
+        if p.get('part') == 'B':
+            # 10R ga yetsa — pozitsiya avtomatik yopiladi (xavfsizlik "tomi")
             if maxR >= CONFIG['MAX_TRAIL_R']:
                 if p['type'] == 'B':
                     exit_b = p['entry'] + CONFIG['MAX_TRAIL_R'] * p['slDist']
@@ -361,10 +323,10 @@ class Engine:
                 p['exitR'] = CONFIG['MAX_TRAIL_R']
                 p['closeReason'] = f"MAX_CAP {CONFIG['MAX_TRAIL_R']:.0f}R"
                 p['gross'] += CONFIG['MAX_TRAIL_R'] * p['riskPerR']
-                if p.get('bot_source') == 'TREND': self.trend_caps += 1
-                else: self.trail_caps += 1
+                self.trail_caps += 1
                 return True
 
+            # Har TRAIL_STEP (2R) qadamda: maxR=4->lockR=2, maxR=6->lockR=4, maxR=8->lockR=6, maxR=10->lockR=8
             if maxR >= CONFIG['BE_AT_R']:
                 steps = int(maxR / CONFIG['TRAIL_STEP'])
                 lockR = (steps - 1) * CONFIG['TRAIL_STEP']
@@ -372,14 +334,17 @@ class Engine:
                     if p['type'] == 'B':
                         newSL = p['entry'] + lockR * p['slDist']
                         if newSL > p['sl']:
-                            p['sl'] = newSL; p['lockR'] = lockR
-                            if p.get('bot_source') != 'TREND': self.trail_steps += 1
+                            p['sl'] = newSL
+                            p['lockR'] = lockR
+                            self.trail_steps += 1
                     else:
                         newSL = p['entry'] - lockR * p['slDist']
                         if newSL < p['sl']:
-                            p['sl'] = newSL; p['lockR'] = lockR
-                            if p.get('bot_source') != 'TREND': self.trail_steps += 1
+                            p['sl'] = newSL
+                            p['lockR'] = lockR
+                            self.trail_steps += 1
             return False
+
         return False
 
     # ----------------------------------------------------------
@@ -390,119 +355,70 @@ class Engine:
             self.day_start_balance = self.balance
             self.trading_paused = False
 
-    # ============================================================
-    # 2C BOT — O'ZGARMAGAN
-    # ============================================================
-    async def openSignal2C(self, signal, candle, is_realtime=False):
+    # ----------------------------------------------------------
+    async def openSignal(self, signal, candle, is_realtime=False):
+        """Har signal → 2 ta pozitsiya (A + B), agar DUAL_ENTRY yoqilgan bo'lsa."""
         self.checkDayReset()
-        if self.trading_paused: return
+
+        if self.trading_paused:
+            return
 
         slots_needed = 2 if CONFIG['DUAL_ENTRY'] else 1
         if len(self.positions) + slots_needed > CONFIG['MAX_OPEN_POS']:
-            return
-        if self.last_signal_2c == candle['time']:
+            log.info(f"{self.symbol}: joy yo'q ({len(self.positions)}/{CONFIG['MAX_OPEN_POS']})")
             return
 
-        p_a = self.openLocal(signal, candle, part='A', bot_source='2C')
+        if self.last_signal_time == candle['time']:
+            return
+
+        # ============ POZITSIYA A ============
+        p_a = self.openLocal(signal, candle, part='A')
         if not p_a: return
         p_a['is_realtime'] = is_realtime
-        oc_a = p_a['lot'] * p_a['entry'] * CONFIG['COMM_RATE']
-        p_a['commission'] += oc_a
-        self.total_comm += oc_a
-        self.positions.append(p_a)
-        self.last_signal_2c = candle['time']
-        if is_realtime: self.rt_entries += 1
 
+        open_comm_a = p_a['lot'] * p_a['entry'] * CONFIG['COMM_RATE']
+        p_a['commission'] += open_comm_a
+        self.total_comm += open_comm_a
+
+        self.positions.append(p_a)
+        self.last_signal_time = candle['time']
+        if is_realtime:
+            self.rt_entries += 1
+
+        # ============ POZITSIYA B ============
         if CONFIG['DUAL_ENTRY']:
-            p_b = self.openLocal(signal, candle, part='B', bot_source='2C')
+            p_b = self.openLocal(signal, candle, part='B')
             if p_b:
                 p_b['is_realtime'] = is_realtime
-                oc_b = p_b['lot'] * p_b['entry'] * CONFIG['COMM_RATE']
-                p_b['commission'] += oc_b
-                self.total_comm += oc_b
+                open_comm_b = p_b['lot'] * p_b['entry'] * CONFIG['COMM_RATE']
+                p_b['commission'] += open_comm_b
+                self.total_comm += open_comm_b
                 self.positions.append(p_b)
 
-        mode = "⚡ RT" if is_realtime else "📊"
-        log.info(f"{mode} [2C] {self.symbol} {signal['type']} | ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}")
+        mode = "⚡ RT (tasdiqlangan)" if is_realtime else "📊 Sham yopilgan"
+        log.info(f"{mode} SIGNAL {self.symbol} {signal['type']} | A=1:1, B=trail(2R qadam/10R cap) | ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}")
 
         action = "BUY" if signal['type'] == 'B' else "SELL"
         emoji = "🟢" if signal['type'] == 'B' else "🔴"
         await tg.send(
-            f"{emoji} <b>[2C BOT] SIGNAL: {action} {self.symbol}</b> 📡\n"
+            f"{emoji} <b>SIGNAL: {action} {self.symbol}</b> 📡\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 <b>{mode} 2C Engulfing</b>\n"
+            f"🎯 <b>{mode}</b>\n"
             f"📊 Narx: <b>${p_a['entry']:.4f}</b>\n"
             f"🛡 SL: ${p_a['sl']:.4f}\n"
-            f"💰 Lot: {p_a['lot']}\n"
-            f"🎯 <b>A + B (2 ta)</b>\n"
+            f"💰 Lot (har biri): {p_a['lot']}\n"
+            f"🎯 <b>2 ta pozitsiya:</b>\n"
+            f"   ├─ A: TP1 @ 1:1 (100%)\n"
+            f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(yopiladi)\n"
             f"📂 Ochiq: <b>{len(self.positions)}/{CONFIG['MAX_OPEN_POS']}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
+
         ch = make_chart(self.candles, self.trades, self.symbol,
-                        CONFIG['INTERVAL'], f"· [2C] {action}",
+                        CONFIG['INTERVAL'], f"· {action}",
                         open_positions=self.positions)
-        if ch: await tg.photo(ch, f"📊 [2C] {self.symbol} · {action}")
-
-    # ============================================================
-    # TREND BOT — YANGI
-    # ============================================================
-    async def openSignalTrend(self, signal, candle, trend, votes, is_realtime=False):
-        self.checkDayReset()
-        if self.trading_paused: return
-
-        # Yo'nalish mos
-        if trend == 'STRONG_UP' and signal['type'] != 'B': return
-        if trend == 'STRONG_DOWN' and signal['type'] != 'S': return
-
-        if votes >= 3:
-            parts = ['A', 'B', 'C', 'D']; levels = 4
-        else:
-            parts = ['A', 'B']; levels = 2
-
-        if len(self.positions) + levels > CONFIG['MAX_OPEN_POS']:
-            return
-        if self.last_signal_trend == candle['time']:
-            return
-
-        opened = []
-        first_p = None
-        for part in parts:
-            p = self.openLocal(signal, candle, part=part, bot_source='TREND')
-            if not p: continue
-            p['is_realtime'] = is_realtime
-            oc = p['lot'] * p['entry'] * CONFIG['COMM_RATE']
-            p['commission'] += oc
-            self.total_comm += oc
-            self.positions.append(p)
-            opened.append(part)
-            if first_p is None: first_p = p
-
-        if not opened: return
-        self.last_signal_trend = candle['time']
-        if is_realtime: self.trend_rt_entries += 1
-
-        mode = "⚡ RT" if is_realtime else "📊"
-        log.info(f"{mode} [TREND] {self.symbol} {signal['type']} | {trend} V{votes} | ochiq: {len(self.positions)}")
-
-        action = "BUY" if signal['type'] == 'B' else "SELL"
-        emoji = "🟢" if signal['type'] == 'B' else "🔴"
-        trend_emoji = "📈" if trend == 'STRONG_UP' else "📉"
-
-        await tg.send(
-            f"{emoji} <b>[TREND BOT] SIGNAL: {action} {self.symbol}</b> 📡\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"{trend_emoji} <b>{trend}</b> | 🗳 <b>{votes}/3 ovoz</b> | {mode}\n"
-            f"📊 Narx: <b>${first_p['entry']:.4f}</b>\n"
-            f"🛡 SL: ${first_p['sl']:.4f}\n"
-            f"💰 Lot: {first_p['lot']}\n"
-            f"🎯 <b>{' + '.join(opened)} ({levels} ta)</b>\n"
-            f"📂 Ochiq: <b>{len(self.positions)}/{CONFIG['MAX_OPEN_POS']}</b>\n"
-            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-        )
-        ch = make_chart(self.candles, self.trades, self.symbol,
-                        CONFIG['INTERVAL'], f"· [TREND] {action}",
-                        open_positions=self.positions)
-        if ch: await tg.photo(ch, f"📊 [TREND] {self.symbol} · {action}")
+        if ch:
+            await tg.photo(ch, f"📊 {self.symbol} · {action}")
 
     # ----------------------------------------------------------
     async def closeSignal(self, p):
@@ -514,48 +430,42 @@ class Engine:
         self.balance += net_pnl
         self.gross_pnl += p['gross']
         p['net_pnl'] = net_pnl
+        self.completedTrades += 1
 
-        bot_src = p.get('bot_source', '2C')
-        if bot_src == 'TREND':
-            self.trend_completed += 1
-            if net_pnl > 0.01: p['result'] = 'W'; self.trend_wins += 1
-            elif net_pnl < -0.01: p['result'] = 'L'; self.trend_losses += 1
-            else: p['result'] = 'BE'; self.trend_be += 1
-            self.trend_stats['net'] += net_pnl
-            if net_pnl > 0.01: self.trend_stats['wins'] += 1
-            elif net_pnl < -0.01: self.trend_stats['losses'] += 1
-        else:
-            self.completedTrades += 1
-            if net_pnl > 0.01: p['result'] = 'W'; self.wins += 1
-            elif net_pnl < -0.01: p['result'] = 'L'; self.losses += 1
-            else: p['result'] = 'BE'; self.bes += 1
-            self.stats_2c['net'] += net_pnl
-            if net_pnl > 0.01: self.stats_2c['wins'] += 1
-            elif net_pnl < -0.01: self.stats_2c['losses'] += 1
+        if net_pnl > 0.01: p['result'] = 'W'; self.wins += 1
+        elif net_pnl < -0.01: p['result'] = 'L'; self.losses += 1
+        else: p['result'] = 'BE'; self.bes += 1
+
+        self.stats_2c['net'] += net_pnl
+        if net_pnl > 0.01: self.stats_2c['wins'] += 1
+        elif net_pnl < -0.01: self.stats_2c['losses'] += 1
 
         self.trades.append(p)
         self.positions.remove(p)
 
         part = p.get('part', '?')
-        bot_tag = "[TREND]" if bot_src == 'TREND' else "[2C]"
-        log.info(f"{bot_tag} {self.symbol} [{part}]: {p['exitR']:+.2f}R | net ${net_pnl:+.2f} | balans ${self.balance:.2f}")
+        log.info(f"{self.symbol} [{part}]: {p['exitR']:+.2f}R | net ${net_pnl:+.2f} | balans ${self.balance:.2f} | ochiq: {len(self.positions)}")
 
         emoji = "✅" if p['result'] == 'W' else "❌" if p['result'] == 'L' else "⚪"
         rt_info = "⚡" if p.get('is_realtime') else "📊"
         await tg.send(
-            f"{emoji} <b>{bot_tag} Yopildi [{part}]: {self.symbol}</b> {rt_info}\n"
+            f"{emoji} <b>Yopildi [{part}]: {self.symbol}</b> {rt_info}\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
             f"📊 Exit: ${p['exit']:.4f}\n"
             f"🎯 R: <b>{p['exitR']:+.2f}R</b>\n"
-            f"📌 {p.get('closeReason', 'SL')}\n"
+            f"📌 Sabab: <b>{p.get('closeReason', 'SL')}</b>\n"
+            f"💵 Gross: ${p['gross']:+.2f}\n"
+            f"🔻 Komissiya: -${p['commission']:.2f}\n"
             f"💰 <b>Net: ${net_pnl:+.2f}</b>\n"
             f"📈 Balans: <b>${self.balance:.2f}</b>\n"
             f"📂 Ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}"
         )
 
         ch = make_chart(self.candles, self.trades, self.symbol,
-                        CONFIG['INTERVAL'], f"· {bot_tag} yopildi [{part}]",
+                        CONFIG['INTERVAL'], f"· yopildi [{part}]",
                         open_positions=self.positions)
-        if ch: await tg.photo(ch, f"📊 {self.symbol} · {bot_tag} yopildi [{part}] ({p['result']})")
+        if ch:
+            await tg.photo(ch, f"📊 {self.symbol} · yopildi [{part}] ({p['result']})")
 
         self.checkDayReset()
         day_loss = (self.day_start_balance - self.balance) / self.day_start_balance if self.day_start_balance > 0 else 0
@@ -564,62 +474,41 @@ class Engine:
             await tg.send(f"🛑 <b>{self.symbol}: KUNLIK ZARAR LIMITI</b>\n📉 -{day_loss*100:.1f}%")
 
     # ============================================================
-    # REALTIME HANDLER — 2C + TREND alohida
+    # REALTIME + CONFIRMATION mantiqi
     # ============================================================
     async def handleRealtimeCandle(self, client, candle):
-        if len(self.candles) < 2: return
+        if len(self.candles) < 2:
+            return
 
         temp = [self.candles[-2], self.candles[-1], candle]
         sig = self.checkEngulfing(temp, 2)
-        now = time.time()
 
-        # ============ 2C BOT REALTIME ============
-        if self.pending_2c is None:
+        if self.pending_signal is None:
             if sig:
-                self.pending_2c = {'signal': sig, 'started_at': now}
-                log.info(f"⏳ [2C] {self.symbol}: {sig['type']} 2.5s kutish")
-        else:
-            pend = self.pending_2c
-            elapsed = now - pend['started_at']
-            if not sig or sig['type'] != pend['signal']['type']:
-                log.info(f"❌ [2C] {self.symbol}: bekor")
-                self.rt_rejected += 1
-                self.pending_2c = None
-            elif elapsed >= CONFIG['CONFIRM_SECONDS']:
-                log.info(f"✅ [2C] {self.symbol}: tasdiqlandi ({elapsed:.1f}s)")
-                self.rt_confirmed += 1
-                self.pending_2c = None
-                await self.openSignal2C(sig, candle, is_realtime=True)
-
-        # ============ TREND BOT REALTIME ============
-        if not CONFIG['TREND_BOT_ENABLED']: return
-
-        trend, votes = self.detect_trend()
-        trend_ok = (trend != 'WEAK' and votes >= 2)
-        trend_sig = None
-        if trend_ok and sig:
-            if trend == 'STRONG_UP' and sig['type'] == 'B': trend_sig = sig
-            elif trend == 'STRONG_DOWN' and sig['type'] == 'S': trend_sig = sig
-
-        if self.pending_trend is None:
-            if trend_sig:
-                self.pending_trend = {
-                    'signal': trend_sig, 'trend': trend, 'votes': votes,
-                    'started_at': now
+                self.pending_signal = {
+                    'signal': sig,
+                    'started_at': time.time(),
+                    'last_candle': candle,
                 }
-                log.info(f"⏳ [TREND] {self.symbol}: {trend_sig['type']} {trend} V{votes} 2.5s kutish")
-        else:
-            pend = self.pending_trend
-            elapsed = now - pend['started_at']
-            if not trend_sig or trend_sig['type'] != pend['signal']['type'] or trend != pend['trend']:
-                log.info(f"❌ [TREND] {self.symbol}: bekor")
-                self.trend_rt_rejected += 1
-                self.pending_trend = None
-            elif elapsed >= CONFIG['CONFIRM_SECONDS']:
-                log.info(f"✅ [TREND] {self.symbol}: tasdiqlandi ({elapsed:.1f}s)")
-                self.trend_rt_confirmed += 1
-                self.pending_trend = None
-                await self.openSignalTrend(trend_sig, candle, trend, votes, is_realtime=True)
+                log.info(f"⏳ {self.symbol}: {sig['type']} signal kutishga qo'yildi (tasdiqlash {CONFIG['CONFIRM_SECONDS']}s)")
+            return
+
+        pending = self.pending_signal
+        elapsed = time.time() - pending['started_at']
+
+        if not sig or sig['type'] != pending['signal']['type']:
+            log.info(f"❌ {self.symbol}: kutishdagi signal bekor qilindi (candle o'zgardi)")
+            self.rt_rejected += 1
+            self.pending_signal = None
+            return
+
+        pending['last_candle'] = candle
+
+        if elapsed >= CONFIG['CONFIRM_SECONDS']:
+            log.info(f"✅ {self.symbol}: {sig['type']} signal tasdiqlandi ({elapsed:.1f}s) — savdo ochilmoqda")
+            self.rt_confirmed += 1
+            self.pending_signal = None
+            await self.openSignal(sig, candle, is_realtime=True)
 
 
 # ============================================================
@@ -644,10 +533,13 @@ async def preload_candles(client, eng, symbol):
         log.error(f"{symbol} preload xato: {e}")
 
 
+# ============================================================
+# WORKER
+# ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
     ENGINES[symbol] = eng
-    log.info(f"🔵 {symbol} | 2C={CONFIG['REALTIME_ENTRY']} | TREND={CONFIG['TREND_BOT_ENABLED']}")
+    log.info(f"🔵 {symbol} worker boshlandi (MAX {CONFIG['MAX_OPEN_POS']}, DUAL={CONFIG['DUAL_ENTRY']}, REALTIME={CONFIG['REALTIME_ENTRY']}, CONFIRM={CONFIG['CONFIRM_SECONDS']}s)")
     await preload_candles(client, eng, symbol)
 
     bsm = BinanceSocketManager(client)
@@ -655,7 +547,7 @@ async def worker(client, symbol):
         try:
             socket = bsm.kline_socket(symbol=symbol, interval=CONFIG['INTERVAL'])
             async with socket as stream:
-                log.info(f"🟢 {symbol} socket")
+                log.info(f"🟢 {symbol} socket ulandi")
                 while True:
                     msg = await stream.recv()
                     if not msg or msg.get('e') != 'kline': continue
@@ -676,24 +568,20 @@ async def worker(client, symbol):
                             eng.candles[-1] = candle
                         else:
                             eng.candles.append(candle)
-                        if len(eng.candles) > 300: eng.candles.pop(0)
+                        if len(eng.candles) > 200: eng.candles.pop(0)
 
-                        eng.pending_2c = None
-                        eng.pending_trend = None
+                        eng.pending_signal = None
 
                         if not CONFIG['REALTIME_ENTRY']:
                             idx = len(eng.candles) - 1
                             sig = eng.checkEngulfing(eng.candles, idx)
                             if sig:
-                                await eng.openSignal2C(sig, candle, is_realtime=False)
-                                if CONFIG['TREND_BOT_ENABLED']:
-                                    trend, votes = eng.detect_trend()
-                                    if trend != 'WEAK' and votes >= 2:
-                                        await eng.openSignalTrend(sig, candle, trend, votes, is_realtime=False)
+                                await eng.openSignal(sig, candle, is_realtime=False)
 
                     for p in list(eng.positions):
                         if eng.manageLocal(p, candle):
                             await eng.closeSignal(p)
+
         except Exception as e:
             log.error(f"{symbol} socket xato: {e} — 5s")
             await asyncio.sleep(5)
@@ -722,26 +610,18 @@ async def daily_diagnostics():
         if now.hour == CONFIG['DIAGNOSTICS_HOUR'] and sent != key:
             sent = key
             if ENGINES:
-                w2 = sum(e.stats_2c['wins'] for e in ENGINES.values())
-                l2 = sum(e.stats_2c['losses'] for e in ENGINES.values())
-                t2 = w2 + l2
-                wr2 = (w2/t2*100) if t2 > 0 else 0
-                rtc = sum(e.rt_confirmed for e in ENGINES.values())
-                rtr = sum(e.rt_rejected for e in ENGINES.values())
-
-                wt = sum(e.trend_stats['wins'] for e in ENGINES.values())
-                lt = sum(e.trend_stats['losses'] for e in ENGINES.values())
-                tt = wt + lt
-                wrt = (wt/tt*100) if tt > 0 else 0
-                trc = sum(e.trend_rt_confirmed for e in ENGINES.values())
-                trr = sum(e.trend_rt_rejected for e in ENGINES.values())
-
-                txt = f"🔍 <b>DIAGNOSTIKA</b> {now.strftime('%d.%m.%Y')}\n"
-                txt += f"━━━━━━━━━━━━━━━━━━\n"
-                txt += f"🤖 <b>[2C BOT]</b>: ✅{w2} ❌{l2} (WR {wr2:.1f}%)\n"
-                txt += f"   ⚡ Tasdiq: {rtc} | ❌ Rad: {rtr}\n"
-                txt += f"📊 <b>[TREND BOT]</b>: ✅{wt} ❌{lt} (WR {wrt:.1f}%)\n"
-                txt += f"   ⚡ Tasdiq: {trc} | ❌ Rad: {trr}\n\n"
+                tw = sum(e.stats_2c['wins'] for e in ENGINES.values())
+                tl = sum(e.stats_2c['losses'] for e in ENGINES.values())
+                tn = sum(e.stats_2c['net'] for e in ENGINES.values())
+                rt_c = sum(e.rt_confirmed for e in ENGINES.values())
+                rt_r = sum(e.rt_rejected for e in ENGINES.values())
+                tp1 = sum(e.tp1_hits for e in ENGINES.values())
+                cap = sum(e.trail_caps for e in ENGINES.values())
+                wr = tw / (tw+tl) * 100 if (tw+tl) > 0 else 0
+                txt = f"🔍 <b>DIAGNOSTIKA</b> {now.strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━\n"
+                txt += f"2C: ✅{tw} ❌{tl} (WR {wr:.1f}%) | ${tn:+.2f}\n"
+                txt += f"⚡ Tasdiqlangan: {rt_c} | ❌ Rad etilgan: {rt_r}\n"
+                txt += f"🎯 TP1 (A): {tp1} | 🧢 MAX_CAP (B, 10R): {cap}\n\n"
                 for s, e in ENGINES.items():
                     net = e.balance - e.initial
                     em = "🟢" if net >= 0 else "🔴"
@@ -756,54 +636,50 @@ async def daily_report():
         if now.hour == CONFIG['REPORT_HOUR'] and now.minute < 1:
             tb = sum(e.balance for e in ENGINES.values())
             ti = sum(e.initial for e in ENGINES.values())
+            tw = sum(e.wins for e in ENGINES.values())
+            tl = sum(e.losses for e in ENGINES.values())
+            td = sum(e.wins+e.losses+e.bes for e in ENGINES.values())
+            rt_c = sum(e.rt_confirmed for e in ENGINES.values())
+            wr = tw/td*100 if td > 0 else 0
             pct = (tb-ti)/ti*100 if ti else 0
-
-            w2 = sum(e.stats_2c['wins'] for e in ENGINES.values())
-            l2 = sum(e.stats_2c['losses'] for e in ENGINES.values())
-            t2 = w2+l2
-            wr2 = (w2/t2*100) if t2 > 0 else 0
-
-            wt = sum(e.trend_stats['wins'] for e in ENGINES.values())
-            lt = sum(e.trend_stats['losses'] for e in ENGINES.values())
-            tt = wt+lt
-            wrt = (wt/tt*100) if tt > 0 else 0
-
-            txt = f"📊 <b>KUNLIK HISOBOT</b> {now.strftime('%d.%m.%Y')}\n"
-            txt += f"━━━━━━━━━━━━━━━━━━\n"
-            txt += f"🤖 <b>[2C BOT]</b>: WR {wr2:.1f}% (✅{w2}❌{l2})\n"
-            txt += f"📊 <b>[TREND BOT]</b>: WR {wrt:.1f}% (✅{wt}❌{lt})\n\n"
+            txt = f"📊 <b>KUNLIK HISOBOT</b> {now.strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━\n"
+            txt += f"⚡ Tasdiqlangan real-time: {rt_c} ta\n\n"
             for s, e in ENGINES.items():
                 sp = (e.balance-e.initial)/e.initial*100
                 em = "🟢" if e.balance >= e.initial else "🔴"
-                txt += f"{em} <b>{s}</b>: ${e.balance:.2f} ({sp:+.2f}%)\n"
-            txt += f"\n━━━━━━━━━━━━━━━━━━\n💰 <b>JAMI: ${tb:.2f} ({pct:+.2f}%)</b>"
+                sw = e.wins/(e.wins+e.losses)*100 if (e.wins+e.losses) > 0 else 0
+                txt += f"\n{em} <b>{s}</b>: ${e.balance:.2f} ({sp:+.2f}%) WR:{sw:.1f}% ✅{e.wins}❌{e.losses}\n"
+            txt += f"\n━━━━━━━━━━━━━━━━━━\nJAMI: WR {wr:.1f}% | ${tb:.2f} ({pct:+.2f}%)"
             await tg.send(txt)
             await asyncio.sleep(60)
         await asyncio.sleep(30)
 
 
+# ============================================================
+# ASOSIY
+# ============================================================
 async def main():
-    log.info("🚀 Bot v5.10.0 — 2C BOT + TREND BOT")
+    log.info("🚀 Bot v5.9.3 — DUAL ENTRY + BODY ENGULFING + CONFIRMATION")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
-    log.info(f"2C RT: {CONFIG['REALTIME_ENTRY']} | TREND: {CONFIG['TREND_BOT_ENABLED']} | CONFIRM: {CONFIG['CONFIRM_SECONDS']}s")
+    log.info(f"REALTIME={CONFIG['REALTIME_ENTRY']} | DUAL={CONFIG['DUAL_ENTRY']} | CONFIRM={CONFIG['CONFIRM_SECONDS']}s")
 
-    trend_status = "Yoqilgan" if CONFIG['TREND_BOT_ENABLED'] else "Ochirilgan"
+    rt_status = "Yoqilgan" if CONFIG['REALTIME_ENTRY'] else "Ochirilgan"
+    dual_status = "Yoqilgan" if CONFIG['DUAL_ENTRY'] else "Ochirilgan"
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.10.0 — 2 BOT</b>\n"
+        f"🚀 <b>Engulfing Bot v5.9.3 — DUAL ENTRY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 <b>[2C BOT]</b> — o'zgarmagan\n"
-        f"   ├─ 2C Engulfing ⚡ RT {CONFIG['CONFIRM_SECONDS']}s\n"
-        f"   └─ Har signal: A + B\n"
-        f"📊 <b>[TREND BOT]</b> — {trend_status}\n"
-        f"   ├─ 3 usul: HH/HL + S/R + BigC\n"
-        f"   ├─ 2/3 ovoz → A + B (2)\n"
-        f"   └─ 3/3 ovoz → A + B + C + D (4)\n"
-        f"💰 Umumiy balans: ${CONFIG['BALANCE']}\n"
-        f"📂 Umumiy limit: {CONFIG['MAX_OPEN_POS']}\n"
+        f"⚡ <b>REALTIME</b>: {rt_status} ({CONFIG['CONFIRM_SECONDS']}s tasdiqlash)\n"
+        f"🎯 <b>DUAL ENTRY</b>: {dual_status}\n"
         f"📊 {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
-        f"✅ Ikkala bot aktiv"
+        f"🎯 2C Engulfing — FAQAT BODY (open/close)\n"
+        f"🎯 <b>Har signal 2 pozitsiya:</b>\n"
+        f"   ├─ A: TP1 @ 1:1 (100%)\n"
+        f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
+        f"📂 Max pozitsiya: <b>{CONFIG['MAX_OPEN_POS']}</b>\n"
+        f"⚖️ Risk: {CONFIG['RISK_PCT']*100:.1f}%\n"
+        f"✅ Aktiv"
     )
 
     client = await AsyncClient.create()
