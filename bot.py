@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.6.1 — SIGNAL-ONLY MODE + Chart Markers
+# EngulfingTrend Bot v5.6.2 — SIGNAL-ONLY MODE + Chart Markers + Yangi Engulfing Mantiq
 # ============================================================
 import os
 import asyncio
@@ -86,7 +86,7 @@ tg = TG(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
 
 
 # ============================================================
-# GRAFIK YARATISH (endi signal nuqtalari BUY/SELL yozuv bilan belgilanadi)
+# GRAFIK YARATISH (signal nuqtalari BUY/SELL yozuv bilan belgilanadi)
 # ============================================================
 def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None):
     """
@@ -113,7 +113,7 @@ def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None
         def mark_point(entry_time, entry_price, side, label_extra=""):
             """Berilgan vaqt/narxga BUY yoki SELL yozuvi va o'q belgisini chizadi."""
             try:
-                tt = datetime.fromtimestamp(entry_time)
+                tt = datetime.utcfromtimestamp(entry_time)   # UTC bilan, df bilan mos
                 if tt in index_list:
                     i = index_list.index(tt)
                 else:
@@ -206,19 +206,28 @@ class Engine:
         if idx < 2: return None
         cur = cd[idx]; p1 = cd[idx - 1]; p2 = cd[idx - 2]
 
-        bull1 = (cur['close'] > cur['open'] and cur['open'] <= p1['close']
-                 and cur['close'] >= p1['open'] and p1['close'] < p1['open'])
-        bear1 = (cur['close'] < cur['open'] and cur['open'] >= p1['close']
-                 and cur['close'] <= p1['open'] and p1['close'] > p1['open'])
-
         maxHigh2 = max(p1['high'], p2['high'])
         minLow2  = min(p1['low'],  p2['low'])
-        bull2 = (cur['close'] > cur['open'] and p1['close'] < p1['open']
-                 and p2['close'] < p2['open'] and cur['low'] <= minLow2
-                 and cur['close'] > maxHigh2)
-        bear2 = (cur['close'] < cur['open'] and p1['close'] > p1['open']
-                 and p2['close'] > p2['open'] and cur['high'] >= maxHigh2
-                 and cur['close'] < minLow2)
+
+        # 1-candle: joriy candle 1 ta oldingi qarama-qarshi rangdagi candle'ni yorib o'tadi (fitil bilan)
+        bull1 = (cur['close'] > cur['open']         # joriy KO'K
+                 and p1['close'] < p1['open']       # oldingi QIZIL
+                 and cur['high'] > p1['high'])       # yuqoriga yorib o'tadi
+
+        bear1 = (cur['close'] < cur['open']         # joriy QIZIL
+                 and p1['close'] > p1['open']       # oldingi KO'K
+                 and cur['low'] < p1['low'])          # pastga yorib o'tadi
+
+        # 2-candle: joriy candle 2 ta oldingi qarama-qarshi rangdagi candle'ni yorib o'tadi (fitil bilan)
+        bull2 = (cur['close'] > cur['open']         # joriy KO'K
+                 and p1['close'] < p1['open']       # oldingi 2 tasi QIZIL
+                 and p2['close'] < p2['open']
+                 and cur['high'] > maxHigh2)          # ikkalasini yuqoriga yorib o'tadi
+
+        bear2 = (cur['close'] < cur['open']         # joriy QIZIL
+                 and p1['close'] > p1['open']       # oldingi 2 tasi KO'K
+                 and p2['close'] > p2['open']
+                 and cur['low'] < minLow2)             # ikkalasini pastga yorib o'tadi
 
         if bull1 or bull2: return {'type': 'B', 'candles': 2 if bull2 else 1}
         if bear1 or bear2: return {'type': 'S', 'candles': 2 if bear2 else 1}
@@ -326,7 +335,6 @@ class Engine:
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
 
-        # Chart'da endi ochiq (hali yopilmagan) signal ham belgilanadi
         ch = make_chart(self.candles, self.trades, self.symbol,
                         CONFIG['INTERVAL'], f"· {action} (signal)",
                         open_positions=self.positions)
@@ -377,7 +385,6 @@ class Engine:
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
 
-        # Yopilgandan keyin ham yangilangan chart — endi bu savdo "yopilgan" (trades) sifatida belgilanadi
         ch = make_chart(self.candles, self.trades, self.symbol,
                         CONFIG['INTERVAL'], "· yopildi",
                         open_positions=self.positions)
@@ -593,19 +600,19 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.6.1 ishga tushdi — SIGNAL-ONLY MODE + Chart Markers")
+    log.info("🚀 Bot v5.6.2 ishga tushdi — SIGNAL-ONLY MODE + Yangi Engulfing Mantiq")
     log.info("⚠️ HECH QANDAY REAL ORDER YUBORILMAYDI — faqat real bozor narxidan signal aniqlanadi")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.6.1 — SIGNAL-ONLY</b>\n"
+        f"🚀 <b>Engulfing Bot v5.6.2 — SIGNAL-ONLY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <b>Real order YO'Q — faqat signal kuzatuvi</b>\n"
         f"📊 Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"🌐 Ma'lumot manbai: <b>Real Binance bozori</b>\n"
         f"⚖️ Virtual risk/trade: {CONFIG['RISK_PCT']*100:.1f}%\n"
-        f"📍 Chart'da endi BUY/SELL belgilar ko'rsatiladi\n"
+        f"🎯 Engulfing: fitil (high/low) bilan, rang filtri bilan\n"
         f"✅ Bot aktiv"
     )
 
