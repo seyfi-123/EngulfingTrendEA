@@ -1,5 +1,6 @@
 # ============================================================
-# EngulfingTrend Bot v5.8.0 — REALTIME + STRICT BODY + MULTI-POS
+# EngulfingTrend Bot v5.9.0 — DUAL ENTRY + REALTIME + STRICT BODY
+# Har signal: Pozitsiya A (1:1 da yopiladi) + Pozitsiya B (trail 10R+)
 # ============================================================
 import os
 import asyncio
@@ -29,18 +30,19 @@ CONFIG = {
     'LOT_MIN':    float(os.getenv('LOT_MIN', '0.001')),
     'LOT_MAX':    float(os.getenv('LOT_MAX', '2.0')),
     'MIN_RISK_USD': float(os.getenv('MIN_RISK_USD', '2.0')),
-    'MAX_OPEN_POS': int(os.getenv('MAX_OPEN_POS', '5')),
+    'MAX_OPEN_POS': int(os.getenv('MAX_OPEN_POS', '10')),
     'PRELOAD_CANDLES': int(os.getenv('PRELOAD_CANDLES', '100')),
     'SL_BUF':     float(os.getenv('SL_BUF', '10')),
 
-    # === Real-time entry ===
+    # === Dual Entry ===
+    'DUAL_ENTRY': os.getenv('DUAL_ENTRY', 'True') == 'True',
     'REALTIME_ENTRY': os.getenv('REALTIME_ENTRY', 'True') == 'True',
 
     # === Strategiya ===
     'BE_AT_R':    float(os.getenv('BE_AT_R', '1.0')),
-    'TP1_AT_R':   float(os.getenv('TP1_AT_R', '1.5')),
-    'TP1_PCT':    float(os.getenv('TP1_PCT', '0.30')),
+    'TP1_AT_R':   float(os.getenv('TP1_AT_R', '1.0')),      # A uchun: 1:1
     'TRAIL_STEP': float(os.getenv('TRAIL_STEP', '0.5')),
+
     'COMM_RATE':  float(os.getenv('COMM_RATE', '0.0005')),
 
     # === Hisobot ===
@@ -133,7 +135,8 @@ def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None
             mark_point(t['time'], t['entry'], t['type'], f"{t.get('engulfCandles','')}C")
         if open_positions:
             for p in open_positions:
-                mark_point(p['time'], p['entry'], p['type'], f"{p.get('engulfCandles','')}C (ochiq)")
+                part = p.get('part', '')
+                mark_point(p['time'], p['entry'], p['type'], f"{p.get('engulfCandles','')}C-{part} (ochiq)")
 
         ax.set_title(f'{symbol} · {interval} {suffix}', color='#e2e8f0', fontsize=14, pad=15)
         ax.tick_params(colors='#94a3b8', labelsize=9)
@@ -193,7 +196,6 @@ class Engine:
         if idx < 2: return None
         cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
 
-        # BULLISH: joriy yashil, orqadagi 2 qizil
         bull2 = (
             cur['close'] > cur['open']
             and p1['close'] < p1['open']
@@ -201,7 +203,6 @@ class Engine:
             and cur['open']  < min(p1['close'], p2['close'])
             and cur['close'] > max(p1['open'], p2['open'])
         )
-        # BEARISH: joriy qizil, orqadagi 2 yashil
         bear2 = (
             cur['close'] < cur['open']
             and p1['close'] > p1['open']
@@ -214,7 +215,7 @@ class Engine:
         return None
 
     # ----------------------------------------------------------
-    def openLocal(self, signal, candle):
+    def openLocal(self, signal, candle, part='A'):
         cur = candle
         buf = CONFIG['SL_BUF'] * (cur['close'] / 100000)
 
@@ -248,10 +249,14 @@ class Engine:
             'gross': 0.0,
             'commission': 0.0,
             'tp1Net': 0.0,
+            'part': part,
+            'is_realtime': False,
         }
 
     # ----------------------------------------------------------
     def manageLocal(self, p, candle):
+        """Har bir pozitsiyani alohida boshqaradi"""
+        # ============ SL tekshirish ============
         sl_hit = False; exit_price = 0; exitR = 0
         if p['type'] == 'B' and candle['low'] <= p['sl']:
             sl_hit = True; exit_price = p['sl']
@@ -263,54 +268,62 @@ class Engine:
         if sl_hit:
             p['exit'] = exit_price
             p['exitR'] = exitR
-            p['closeReason'] = 'BE' if p['beSet'] else 'SL'
-            remaining_gross = exitR * p['riskPerR'] * (p['qty_remaining'] / p['lot'])
-            p['gross'] += remaining_gross
+            if p['beSet']:
+                p['closeReason'] = 'BE'
+            elif p.get('lockR', 0) > 0:
+                p['closeReason'] = f"Trail {p['lockR']:.1f}R"
+            else:
+                p['closeReason'] = 'SL'
+            p['gross'] += exitR * p['riskPerR']  # 100%
             return True
 
+        # ============ Max R ============
         if p['type'] == 'B':
             maxR = (candle['high'] - p['entry']) / p['slDist']
         else:
             maxR = (p['entry'] - candle['low']) / p['slDist']
 
-        # BE @ 1:1
+        # ============ BE @ 1:1 ============
         if maxR >= CONFIG['BE_AT_R'] and not p['beSet']:
             p['sl'] = p['entry']
             p['beSet'] = True
 
-        # TP1 30% @ 1:1.5
-        if maxR >= CONFIG['TP1_AT_R'] and not p['tp1Done']:
-            tp1_qty = p['lot'] * CONFIG['TP1_PCT']
-            if p['type'] == 'B':
-                tp1_price = p['entry'] + CONFIG['TP1_AT_R'] * p['slDist']
-            else:
-                tp1_price = p['entry'] - CONFIG['TP1_AT_R'] * p['slDist']
-
-            tp1_r = CONFIG['TP1_AT_R']
-            tp1_gross = tp1_r * p['riskPerR'] * CONFIG['TP1_PCT']
-            tp1_comm = tp1_qty * tp1_price * CONFIG['COMM_RATE']
-
-            p['gross'] += tp1_gross
-            p['commission'] += tp1_comm
-            p['tp1Net'] = tp1_gross - tp1_comm
-            p['qty_remaining'] -= tp1_qty
-            p['tp1Done'] = True
-            self.tp1_hits += 1
-            self.total_comm += tp1_comm
-
-        # Trail @ 0.5R qadam
-        if p['tp1Done'] and maxR >= CONFIG['TP1_AT_R']:
-            steps = int(maxR / CONFIG['TRAIL_STEP'])
-            lockR = (steps - 2) * CONFIG['TRAIL_STEP']
-            if lockR > 0:
+        # ============ POZITSIYA A — 1:1 da 100% yopiladi ============
+        if p.get('part') == 'A':
+            if maxR >= CONFIG['TP1_AT_R'] and not p.get('tp1Done'):
                 if p['type'] == 'B':
-                    newSL = p['entry'] + lockR * p['slDist']
-                    if newSL > p['sl']:
-                        p['sl'] = newSL; p['lockR'] = lockR; self.trail_steps += 1
+                    exit_a = p['entry'] + CONFIG['TP1_AT_R'] * p['slDist']
                 else:
-                    newSL = p['entry'] - lockR * p['slDist']
-                    if newSL < p['sl']:
-                        p['sl'] = newSL; p['lockR'] = lockR; self.trail_steps += 1
+                    exit_a = p['entry'] - CONFIG['TP1_AT_R'] * p['slDist']
+
+                p['exit'] = exit_a
+                p['exitR'] = CONFIG['TP1_AT_R']
+                p['closeReason'] = 'TP1_A'
+                p['gross'] += CONFIG['TP1_AT_R'] * p['riskPerR']
+                p['tp1Done'] = True
+                self.tp1_hits += 1
+                return True
+            return False
+
+        # ============ POZITSIYA B — trail-only, 10R+ gacha ============
+        if p.get('part') == 'B':
+            if maxR >= CONFIG['BE_AT_R']:
+                steps = int(maxR / CONFIG['TRAIL_STEP'])
+                lockR = (steps - 2) * CONFIG['TRAIL_STEP']
+                if lockR > 0:
+                    if p['type'] == 'B':
+                        newSL = p['entry'] + lockR * p['slDist']
+                        if newSL > p['sl']:
+                            p['sl'] = newSL
+                            p['lockR'] = lockR
+                            self.trail_steps += 1
+                    else:
+                        newSL = p['entry'] - lockR * p['slDist']
+                        if newSL < p['sl']:
+                            p['sl'] = newSL
+                            p['lockR'] = lockR
+                            self.trail_steps += 1
+            return False
 
         return False
 
@@ -324,48 +337,61 @@ class Engine:
 
     # ----------------------------------------------------------
     async def openSignal(self, signal, candle, is_realtime=False):
+        """Har signal → 2 ta pozitsiya (A + B)"""
         self.checkDayReset()
 
         if self.trading_paused:
             return
 
-        if len(self.positions) >= CONFIG['MAX_OPEN_POS']:
-            log.info(f"{self.symbol}: MAX pozitsiya ({CONFIG['MAX_OPEN_POS']}) — signal o'tkazildi")
+        slots_needed = 2 if CONFIG['DUAL_ENTRY'] else 1
+        if len(self.positions) + slots_needed > CONFIG['MAX_OPEN_POS']:
+            log.info(f"{self.symbol}: joy yo'q ({len(self.positions)}/{CONFIG['MAX_OPEN_POS']})")
             return
 
         if self.last_signal_time == candle['time']:
             return
 
-        p = self.openLocal(signal, candle)
-        if not p: return
+        # ============ POZITSIYA A — 1:1 da yopiladi ============
+        p_a = self.openLocal(signal, candle, part='A')
+        if not p_a: return
+        p_a['is_realtime'] = is_realtime
 
-        open_comm = p['lot'] * p['entry'] * CONFIG['COMM_RATE']
-        p['commission'] += open_comm
-        self.total_comm += open_comm
+        open_comm_a = p_a['lot'] * p_a['entry'] * CONFIG['COMM_RATE']
+        p_a['commission'] += open_comm_a
+        self.total_comm += open_comm_a
 
-        p['is_realtime'] = is_realtime
+        self.positions.append(p_a)
+        self.last_signal_time = candle['time']
         if is_realtime:
             self.rt_entries += 1
 
-        self.positions.append(p)
-        self.last_signal_time = candle['time']
+        # ============ POZITSIYA B — trail-only ============
+        if CONFIG['DUAL_ENTRY']:
+            p_b = self.openLocal(signal, candle, part='B')
+            if p_b:
+                p_b['is_realtime'] = is_realtime
+                open_comm_b = p_b['lot'] * p_b['entry'] * CONFIG['COMM_RATE']
+                p_b['commission'] += open_comm_b
+                self.total_comm += open_comm_b
+                self.positions.append(p_b)
 
-        mode = "⚡ REALTIME" if is_realtime else "📊 CLOSE"
-        log.info(f"{mode} SIGNAL {self.symbol} {signal['type']} @ ${p['entry']:.4f} | "
-                 f"lot={p['lot']} | ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}")
+        mode = "⚡ RT" if is_realtime else "📊"
+        log.info(f"{mode} SIGNAL {self.symbol} {signal['type']} | "
+                 f"A=1:1, B=trail | ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}")
 
         action = "BUY" if signal['type'] == 'B' else "SELL"
         emoji = "🟢" if signal['type'] == 'B' else "🔴"
-        mode_txt = "⚡ Real-time (2C to'liq yutildi)" if is_realtime else "📊 Sham yopildi"
+        mode_txt = "⚡ Real-time" if is_realtime else "📊 Sham yopildi"
         await tg.send(
             f"{emoji} <b>SIGNAL: {action} {self.symbol}</b> 📡\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 <b>{mode_txt}</b>\n"
-            f"📊 Narx: <b>${p['entry']:.4f}</b>\n"
-            f"🛡 SL: ${p['sl']:.4f}\n"
-            f"💰 Lot: {p['lot']} (risk/R: ${p['riskPerR']:.2f})\n"
-            f"🎯 Engulf: <b>{p['engulfCandles']}C (tana)</b>\n"
-            f"🎯 Rejim: BE@1:{CONFIG['BE_AT_R']} · TP1 {int(CONFIG['TP1_PCT']*100)}%@1:{CONFIG['TP1_AT_R']}\n"
+            f"📊 Narx: <b>${p_a['entry']:.4f}</b>\n"
+            f"🛡 SL: ${p_a['sl']:.4f}\n"
+            f"💰 Lot (har biri): {p_a['lot']}\n"
+            f"🎯 <b>2 ta pozitsiya:</b>\n"
+            f"   ├─ A: TP1 @ 1:1 (100%)\n"
+            f"   └─ B: Trail 10R+ gacha\n"
             f"📂 Ochiq: <b>{len(self.positions)}/{CONFIG['MAX_OPEN_POS']}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
@@ -399,19 +425,18 @@ class Engine:
         self.trades.append(p)
         self.positions.remove(p)
 
-        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | net ${net_pnl:+.2f} | "
+        part = p.get('part', '?')
+        log.info(f"{self.symbol} [{part}]: {p['exitR']:+.2f}R | net ${net_pnl:+.2f} | "
                  f"balans ${self.balance:.2f} | ochiq: {len(self.positions)}")
 
         emoji = "✅" if p['result'] == 'W' else "❌" if p['result'] == 'L' else "⚪"
-        tp1_info = f"💰 TP1: +${p['tp1Net']:.2f}\n" if p['tp1Done'] else ""
-        rt_info = "⚡ RT" if p.get('is_realtime') else "📊"
+        rt_info = "⚡" if p.get('is_realtime') else "📊"
         await tg.send(
-            f"{emoji} <b>Yopildi: {self.symbol}</b> {rt_info}\n"
+            f"{emoji} <b>Yopildi [{part}]: {self.symbol}</b> {rt_info}\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"📊 Exit: ${p['exit']:.4f}\n"
             f"🎯 R: <b>{p['exitR']:+.2f}R</b>\n"
             f"📌 Sabab: <b>{p.get('closeReason', 'SL')}</b>\n"
-            f"{tp1_info}"
             f"💵 Gross: ${p['gross']:+.2f}\n"
             f"🔻 Komissiya: -${p['commission']:.2f}\n"
             f"💰 <b>Net: ${net_pnl:+.2f}</b>\n"
@@ -420,10 +445,10 @@ class Engine:
         )
 
         ch = make_chart(self.candles, self.trades, self.symbol,
-                        CONFIG['INTERVAL'], "· yopildi",
+                        CONFIG['INTERVAL'], f"· yopildi [{part}]",
                         open_positions=self.positions)
         if ch:
-            await tg.photo(ch, f"📊 {self.symbol} · yopildi")
+            await tg.photo(ch, f"📊 {self.symbol} · yopildi [{part}] ({p['result']})")
 
         self.checkDayReset()
         day_loss = (self.day_start_balance - self.balance) / self.day_start_balance if self.day_start_balance > 0 else 0
@@ -449,18 +474,18 @@ async def preload_candles(client, eng, symbol):
                 'close': float(k[4]), 'closed': True,
             })
         eng.candles = candles
-        log.info(f"📥 {symbol}: {len(candles)} ta sham yuklandi")
+        log.info(f"📥 {symbol}: {len(candles)} ta sham")
     except Exception as e:
         log.error(f"{symbol} preload xato: {e}")
 
 
 # ============================================================
-# WORKER — REALTIME ENTRY (2 SHAM TO'LIQ YUTILSA)
+# WORKER
 # ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
     ENGINES[symbol] = eng
-    log.info(f"🔵 {symbol} worker boshlandi (MAX {CONFIG['MAX_OPEN_POS']} pozitsiya)")
+    log.info(f"🔵 {symbol} worker boshlandi (MAX {CONFIG['MAX_OPEN_POS']}, DUAL={CONFIG['DUAL_ENTRY']})")
     await preload_candles(client, eng, symbol)
 
     bsm = BinanceSocketManager(client)
@@ -481,9 +506,7 @@ async def worker(client, symbol):
                         'closed': k['x'],
                     }
 
-                    # ============================================
-                    # REALTIME ENTRY — shakllanayotgan sham 2 shamni TO'LIQ yutgan bo'lsa
-                    # ============================================
+                    # REALTIME ENTRY
                     if CONFIG['REALTIME_ENTRY'] and not candle['closed']:
                         if len(eng.candles) >= 2:
                             temp = [eng.candles[-2], eng.candles[-1], candle]
@@ -491,9 +514,7 @@ async def worker(client, symbol):
                             if sig:
                                 await eng.openSignal(sig, candle, is_realtime=True)
 
-                    # ============================================
                     # SHAM YOPILGANDA
-                    # ============================================
                     if candle['closed']:
                         if eng.candles and eng.candles[-1]['time'] == candle['time']:
                             eng.candles[-1] = candle
@@ -501,14 +522,13 @@ async def worker(client, symbol):
                             eng.candles.append(candle)
                         if len(eng.candles) > 200: eng.candles.pop(0)
 
-                        # Agar REALTIME o'chirilgan bo'lsa — yopilganda tekshirish
                         if not CONFIG['REALTIME_ENTRY']:
                             idx = len(eng.candles) - 1
                             sig = eng.checkEngulfing(eng.candles, idx)
                             if sig:
                                 await eng.openSignal(sig, candle, is_realtime=False)
 
-                    # HAR BIR ochiq pozitsiyani alohida boshqarish
+                    # HAR BIR pozitsiyani boshqarish
                     for p in list(eng.positions):
                         if eng.manageLocal(p, candle):
                             await eng.closeSignal(p)
@@ -548,7 +568,7 @@ async def daily_diagnostics():
                 wr = tw / (tw+tl) * 100 if (tw+tl) > 0 else 0
                 txt = f"🔍 <b>DIAGNOSTIKA</b> {now.strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━\n"
                 txt += f"2C: ✅{tw} ❌{tl} (WR {wr:.1f}%) | ${tn:+.2f}\n"
-                txt += f"⚡ Real-time entry: {rt}\n\n"
+                txt += f"⚡ Real-time: {rt}\n\n"
                 for s, e in ENGINES.items():
                     net = e.balance - e.initial
                     em = "🟢" if net >= 0 else "🔴"
@@ -586,20 +606,26 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.8.0 — REALTIME ENTRY")
+    log.info("🚀 Bot v5.9.0 — DUAL ENTRY")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
-    log.info(f"REALTIME_ENTRY = {CONFIG['REALTIME_ENTRY']}")
+    log.info(f"REALTIME={CONFIG['REALTIME_ENTRY']} | DUAL={CONFIG['DUAL_ENTRY']}")
+    log.info(f"Pozitsiya A: TP1 @ 1:{CONFIG['TP1_AT_R']} (100%)")
+    log.info(f"Pozitsiya B: Trail @ {CONFIG['TRAIL_STEP']}R qadam")
 
-    realtime_status = "Yoqilgan" if CONFIG['REALTIME_ENTRY'] else "Ochirilgan"
+    rt_status = "Yoqilgan" if CONFIG['REALTIME_ENTRY'] else "Ochirilgan"
+    dual_status = "Yoqilgan" if CONFIG['DUAL_ENTRY'] else "Ochirilgan"
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.8.0</b>\n"
+        f"🚀 <b>Engulfing Bot v5.9.0 — DUAL ENTRY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ <b>REALTIME MODE</b>: {realtime_status}\n"
+        f"⚡ <b>REALTIME</b>: {rt_status}\n"
+        f"🎯 <b>DUAL ENTRY</b>: {dual_status}\n"
         f"📊 {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"🎯 2C Body Engulfing (STRICT)\n"
-        f"🎯 BE@1:{CONFIG['BE_AT_R']} · TP1 {int(CONFIG['TP1_PCT']*100)}%@1:{CONFIG['TP1_AT_R']}\n"
+        f"🎯 <b>Har signal 2 pozitsiya:</b>\n"
+        f"   ├─ A: TP1 @ 1:{CONFIG['TP1_AT_R']} (100%)\n"
+        f"   └─ B: Trail @ {CONFIG['TRAIL_STEP']}R (10R+)\n"
         f"📂 Max pozitsiya: <b>{CONFIG['MAX_OPEN_POS']}</b>\n"
         f"⚖️ Risk: {CONFIG['RISK_PCT']*100:.1f}%\n"
         f"✅ Aktiv"
