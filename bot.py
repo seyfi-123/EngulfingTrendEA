@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.7.0 — SIGNAL-ONLY + STRICT BODY + MULTI-POS
+# EngulfingTrend Bot v5.8.0 — REALTIME ENTRY (candle kutmasdan)
 # ============================================================
 import os
 import asyncio
@@ -29,14 +29,21 @@ CONFIG = {
     'LOT_MIN':    float(os.getenv('LOT_MIN', '0.001')),
     'LOT_MAX':    float(os.getenv('LOT_MAX', '2.0')),
     'MIN_RISK_USD': float(os.getenv('MIN_RISK_USD', '2.0')),
-    'MAX_OPEN_POS': int(os.getenv('MAX_OPEN_POS', '5')),  # ← MAKSIMAL 5 TA
+    'MAX_OPEN_POS': int(os.getenv('MAX_OPEN_POS', '5')),
     'PRELOAD_CANDLES': int(os.getenv('PRELOAD_CANDLES', '100')),
     'SL_BUF':     float(os.getenv('SL_BUF', '10')),
+
+    # === YANGI: real-time entry ===
+    'REALTIME_ENTRY': os.getenv('REALTIME_ENTRY', 'True') == 'True',  # ← YANGI
+
+    # === Strategiya ===
     'BE_AT_R':    float(os.getenv('BE_AT_R', '1.0')),
     'TP1_AT_R':   float(os.getenv('TP1_AT_R', '1.5')),
     'TP1_PCT':    float(os.getenv('TP1_PCT', '0.30')),
     'TRAIL_STEP': float(os.getenv('TRAIL_STEP', '0.5')),
     'COMM_RATE':  float(os.getenv('COMM_RATE', '0.0005')),
+
+    # === Hisobot ===
     'CHART_CANDLES': int(os.getenv('CHART_CANDLES', '100')),
     'REPORT_HOUR':   int(os.getenv('REPORT_HOUR', '18')),
     'SOCKET_TIMEOUT_MIN':  int(os.getenv('SOCKET_TIMEOUT_MIN', '30')),
@@ -153,6 +160,7 @@ class Engine:
         self.completedTrades = 0
         self.wins = 0; self.losses = 0; self.bes = 0
         self.tp1_hits = 0; self.trail_steps = 0
+        self.rt_entries = 0  # real-time entry soni
         self.positions = []
         self.candles = []
         self.trades = []
@@ -164,7 +172,6 @@ class Engine:
         self.day_start_balance = CONFIG['BALANCE']
         self.day_key = None
         self.trading_paused = False
-        # Bir shamda 1 marta signal — takror ochilmasin
         self.last_signal_time = None
 
     # ----------------------------------------------------------
@@ -182,7 +189,7 @@ class Engine:
 
     # ----------------------------------------------------------
     def checkEngulfing(self, cd, idx):
-        """STRICT Body Engulfing — tana OPEN+CLOSE bilan yorib o'tish"""
+        """STRICT Body Engulfing — tana (OPEN+CLOSE) bilan yorib o'tish"""
         if idx < 2: return None
         cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
 
@@ -319,15 +326,13 @@ class Engine:
             self.trading_paused = False
 
     # ----------------------------------------------------------
-    async def openSignal(self, signal, candle):
-        """YANGI POZITSIYA OCHISH — ochiq pozitsiya bo'lsa ham"""
+    async def openSignal(self, signal, candle, is_realtime=False):
+        """YANGI POZITSIYA OCHISH"""
         self.checkDayReset()
 
         if self.trading_paused:
-            log.info(f"{self.symbol}: paused — signal o'tkazildi")
             return
 
-        # ==== ASOSIY: MAKSIMAL 5 TA POZITSIYA ====
         if len(self.positions) >= CONFIG['MAX_OPEN_POS']:
             log.info(f"{self.symbol}: MAX pozitsiya ({CONFIG['MAX_OPEN_POS']}) — signal o'tkazildi")
             return
@@ -344,17 +349,24 @@ class Engine:
         p['commission'] += open_comm
         self.total_comm += open_comm
 
+        p['is_realtime'] = is_realtime
+        if is_realtime:
+            self.rt_entries += 1
+
         self.positions.append(p)
         self.last_signal_time = candle['time']
 
-        log.info(f"📡 SIGNAL {self.symbol} {signal['type']} @ ${p['entry']:.4f} | "
+        mode = "⚡ REALTIME" if is_realtime else "📊 CLOSE"
+        log.info(f"{mode} SIGNAL {self.symbol} {signal['type']} @ ${p['entry']:.4f} | "
                  f"lot={p['lot']} | ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}")
 
         action = "BUY" if signal['type'] == 'B' else "SELL"
         emoji = "🟢" if signal['type'] == 'B' else "🔴"
+        mode_txt = "⚡ Real-time (sham kutmasdan)" if is_realtime else "📊 Sham yopildi"
         await tg.send(
             f"{emoji} <b>SIGNAL: {action} {self.symbol}</b> 📡\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>{mode_txt}</b>\n"
             f"📊 Narx: <b>${p['entry']:.4f}</b>\n"
             f"🛡 SL: ${p['sl']:.4f}\n"
             f"💰 Lot: {p['lot']} (risk/R: ${p['riskPerR']:.2f})\n"
@@ -365,7 +377,7 @@ class Engine:
         )
 
         ch = make_chart(self.candles, self.trades, self.symbol,
-                        CONFIG['INTERVAL'], f"· {action}",
+                        CONFIG['INTERVAL'], f"· {action} {'RT' if is_realtime else ''}",
                         open_positions=self.positions)
         if ch:
             await tg.photo(ch, f"📊 {self.symbol} · {action}")
@@ -398,8 +410,9 @@ class Engine:
 
         emoji = "✅" if p['result'] == 'W' else "❌" if p['result'] == 'L' else "⚪"
         tp1_info = f"💰 TP1: +${p['tp1Net']:.2f}\n" if p['tp1Done'] else ""
+        rt_info = "⚡ RT" if p.get('is_realtime') else "📊"
         await tg.send(
-            f"{emoji} <b>Yopildi: {self.symbol}</b>\n"
+            f"{emoji} <b>Yopildi: {self.symbol}</b> {rt_info}\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"📊 Exit: ${p['exit']:.4f}\n"
             f"🎯 R: <b>{p['exitR']:+.2f}R</b>\n"
@@ -447,10 +460,14 @@ async def preload_candles(client, eng, symbol):
         log.error(f"{symbol} preload xato: {e}")
 
 
+# ============================================================
+# WORKER — REALTIME ENTRY QO'SHILGAN
+# ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
     ENGINES[symbol] = eng
-    log.info(f"🔵 {symbol} worker boshlandi (MAX {CONFIG['MAX_OPEN_POS']} pozitsiya)")
+    log.info(f"🔵 {symbol} worker boshlandi (MAX {CONFIG['MAX_OPEN_POS']} pozitsiya) | "
+             f"REALTIME={CONFIG['REALTIME_ENTRY']}")
     await preload_candles(client, eng, symbol)
 
     bsm = BinanceSocketManager(client)
@@ -470,6 +487,21 @@ async def worker(client, symbol):
                         'low': float(k['l']), 'close': float(k['c']),
                         'closed': k['x'],
                     }
+
+                    # ============================================
+                    # YANGI: REALTIME ENTRY — sham yopilishini KUTMAYMIZ
+                    # ============================================
+                    if CONFIG['REALTIME_ENTRY'] and not candle['closed']:
+                        # Shakllanayotgan sham + oldingi 2 ta yopilgan sham
+                        if len(eng.candles) >= 2:
+                            temp = [eng.candles[-2], eng.candles[-1], candle]
+                            sig = eng.checkEngulfing(temp, 2)
+                            if sig:
+                                await eng.openSignal(sig, candle, is_realtime=True)
+
+                    # ============================================
+                    # SHAM YOPILGANDA — oddiy tekshirish (fallback)
+                    # ============================================
                     if candle['closed']:
                         if eng.candles and eng.candles[-1]['time'] == candle['time']:
                             eng.candles[-1] = candle
@@ -477,11 +509,12 @@ async def worker(client, symbol):
                             eng.candles.append(candle)
                         if len(eng.candles) > 200: eng.candles.pop(0)
 
-                        # YANGI SIGNAL — ochiq pozitsiya bo'lsa ham tekshiriladi
-                        idx = len(eng.candles) - 1
-                        sig = eng.checkEngulfing(eng.candles, idx)
-                        if sig:
-                            await eng.openSignal(sig, candle)
+                        # Agar realtime o'chirilgan bo'lsa — faqat close tekshirish
+                        if not CONFIG['REALTIME_ENTRY']:
+                            idx = len(eng.candles) - 1
+                            sig = eng.checkEngulfing(eng.candles, idx)
+                            if sig:
+                                await eng.openSignal(sig, candle, is_realtime=False)
 
                     # HAR BIR ochiq pozitsiyani alohida boshqarish
                     for p in list(eng.positions):
@@ -519,9 +552,11 @@ async def daily_diagnostics():
                 tw = sum(e.stats_2c['wins'] for e in ENGINES.values())
                 tl = sum(e.stats_2c['losses'] for e in ENGINES.values())
                 tn = sum(e.stats_2c['net'] for e in ENGINES.values())
+                rt = sum(e.rt_entries for e in ENGINES.values())
                 wr = tw / (tw+tl) * 100 if (tw+tl) > 0 else 0
                 txt = f"🔍 <b>DIAGNOSTIKA</b> {now.strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━\n"
-                txt += f"2C: ✅{tw} ❌{tl} (WR {wr:.1f}%) | ${tn:+.2f}\n\n"
+                txt += f"2C: ✅{tw} ❌{tl} (WR {wr:.1f}%) | ${tn:+.2f}\n"
+                txt += f"⚡ Real-time entry: {rt}\n\n"
                 for s, e in ENGINES.items():
                     net = e.balance - e.initial
                     em = "🟢" if net >= 0 else "🔴"
@@ -539,9 +574,11 @@ async def daily_report():
             tw = sum(e.wins for e in ENGINES.values())
             tl = sum(e.losses for e in ENGINES.values())
             td = sum(e.wins+e.losses+e.bes for e in ENGINES.values())
+            rt = sum(e.rt_entries for e in ENGINES.values())
             wr = tw/td*100 if td > 0 else 0
             pct = (tb-ti)/ti*100 if ti else 0
             txt = f"📊 <b>KUNLIK HISOBOT</b> {now.strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━\n"
+            txt += f"⚡ Real-time: {rt} ta\n\n"
             for s, e in ENGINES.items():
                 sp = (e.balance-e.initial)/e.initial*100
                 em = "🟢" if e.balance >= e.initial else "🔴"
@@ -554,19 +591,19 @@ async def daily_report():
 
 
 async def main():
-    log.info("🚀 Bot v5.7.0 — STRICT BODY + MULTI-POSITION")
+    log.info("🚀 Bot v5.8.0 — REALTIME ENTRY")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
-    log.info(f"Max pozitsiya: {CONFIG['MAX_OPEN_POS']} | BE@{CONFIG['BE_AT_R']}R | TP1 {int(CONFIG['TP1_PCT']*100)}%@{CONFIG['TP1_AT_R']}R")
+    log.info(f"REALTIME_ENTRY = {CONFIG['REALTIME_ENTRY']}")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.7.0</b>\n"
+        f"🚀 <b>Engulfing Bot v5.8.0</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ Signal-only (real order yo'q)\n"
+        f"⚡ <b>REALTIME MODE</b>: {'Yoqilgan ✅' if CONFIG['REALTIME_ENTRY'] else 'O\\'chirilgan'}\n"
         f"📊 {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"🎯 2C Body Engulfing (STRICT)\n"
         f"🎯 BE@1:{CONFIG['BE_AT_R']} · TP1 {int(CONFIG['TP1_PCT']*100)}%@1:{CONFIG['TP1_AT_R']}\n"
-        f"📂 Max pozitsiya (symbolga): <b>{CONFIG['MAX_OPEN_POS']}</b>\n"
+        f"📂 Max pozitsiya: <b>{CONFIG['MAX_OPEN_POS']}</b>\n"
         f"⚖️ Risk: {CONFIG['RISK_PCT']*100:.1f}%\n"
         f"✅ Aktiv"
     )
