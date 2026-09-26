@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.8.0 — REALTIME ENTRY + STRICT BODY + MULTI-POS
+# EngulfingTrend Bot v5.8.0 — REALTIME + STRICT BODY + MULTI-POS
 # ============================================================
 import os
 import asyncio
@@ -189,10 +189,11 @@ class Engine:
 
     # ----------------------------------------------------------
     def checkEngulfing(self, cd, idx):
-        """STRICT Body Engulfing — tana (OPEN+CLOSE) bilan yorib o'tish"""
+        """STRICT Body Engulfing — tana (OPEN+CLOSE) bilan to'liq yutish"""
         if idx < 2: return None
         cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
 
+        # BULLISH: joriy yashil, orqadagi 2 qizil
         bull2 = (
             cur['close'] > cur['open']
             and p1['close'] < p1['open']
@@ -200,6 +201,7 @@ class Engine:
             and cur['open']  < min(p1['close'], p2['close'])
             and cur['close'] > max(p1['open'], p2['open'])
         )
+        # BEARISH: joriy qizil, orqadagi 2 yashil
         bear2 = (
             cur['close'] < cur['open']
             and p1['close'] > p1['open']
@@ -250,7 +252,6 @@ class Engine:
 
     # ----------------------------------------------------------
     def manageLocal(self, p, candle):
-        """Har bir pozitsiyani alohida boshqaradi"""
         sl_hit = False; exit_price = 0; exitR = 0
         if p['type'] == 'B' and candle['low'] <= p['sl']:
             sl_hit = True; exit_price = p['sl']
@@ -323,7 +324,6 @@ class Engine:
 
     # ----------------------------------------------------------
     async def openSignal(self, signal, candle, is_realtime=False):
-        """YANGI POZITSIYA OCHISH"""
         self.checkDayReset()
 
         if self.trading_paused:
@@ -356,7 +356,7 @@ class Engine:
 
         action = "BUY" if signal['type'] == 'B' else "SELL"
         emoji = "🟢" if signal['type'] == 'B' else "🔴"
-        mode_txt = "⚡ Real-time (sham kutmasdan)" if is_realtime else "📊 Sham yopildi"
+        mode_txt = "⚡ Real-time (2C to'liq yutildi)" if is_realtime else "📊 Sham yopildi"
         await tg.send(
             f"{emoji} <b>SIGNAL: {action} {self.symbol}</b> 📡\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -449,13 +449,13 @@ async def preload_candles(client, eng, symbol):
                 'close': float(k[4]), 'closed': True,
             })
         eng.candles = candles
-        log.info(f"📥 {symbol}: {len(candles)} ta sham")
+        log.info(f"📥 {symbol}: {len(candles)} ta sham yuklandi")
     except Exception as e:
         log.error(f"{symbol} preload xato: {e}")
 
 
 # ============================================================
-# WORKER — REALTIME ENTRY
+# WORKER — REALTIME ENTRY (2 SHAM TO'LIQ YUTILSA)
 # ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
@@ -482,7 +482,7 @@ async def worker(client, symbol):
                     }
 
                     # ============================================
-                    # REALTIME ENTRY — sham yopilishini KUTMAYMIZ
+                    # REALTIME ENTRY — shakllanayotgan sham 2 shamni TO'LIQ yutgan bo'lsa
                     # ============================================
                     if CONFIG['REALTIME_ENTRY'] and not candle['closed']:
                         if len(eng.candles) >= 2:
@@ -492,7 +492,7 @@ async def worker(client, symbol):
                                 await eng.openSignal(sig, candle, is_realtime=True)
 
                     # ============================================
-                    # SHAM YOPILGANDA — fallback (REALTIME=False bo'lsa)
+                    # SHAM YOPILGANDA
                     # ============================================
                     if candle['closed']:
                         if eng.candles and eng.candles[-1]['time'] == candle['time']:
@@ -501,6 +501,7 @@ async def worker(client, symbol):
                             eng.candles.append(candle)
                         if len(eng.candles) > 200: eng.candles.pop(0)
 
+                        # Agar REALTIME o'chirilgan bo'lsa — yopilganda tekshirish
                         if not CONFIG['REALTIME_ENTRY']:
                             idx = len(eng.candles) - 1
                             sig = eng.checkEngulfing(eng.candles, idx)
@@ -582,14 +583,13 @@ async def daily_report():
 
 
 # ============================================================
-# ASOSIY — TUZATILGAN (escape xatosi yo'q)
+# ASOSIY
 # ============================================================
 async def main():
     log.info("🚀 Bot v5.8.0 — REALTIME ENTRY")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
     log.info(f"REALTIME_ENTRY = {CONFIG['REALTIME_ENTRY']}")
 
-    # Alohida o'zgaruvchi — apostrof xatosi yo'q
     realtime_status = "Yoqilgan" if CONFIG['REALTIME_ENTRY'] else "Ochirilgan"
 
     await tg.send(
