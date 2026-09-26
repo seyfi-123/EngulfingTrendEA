@@ -1,6 +1,6 @@
 # ============================================================
-# EngulfingTrend Bot v8.0.0 — VOTING SYSTEM + MEMORY + PYRAMID
-# 2 ovoz → A+B | 3 ovoz → A+B+C+D
+# EngulfingTrend Bot v8.1.0 — VOTING + MEMORY + PYRAMID
+# (Fundamental news olib tashlandi)
 # ============================================================
 import os
 import asyncio
@@ -8,7 +8,6 @@ import logging
 import time
 import io
 import sqlite3
-import aiohttp
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from binance import AsyncClient, BinanceSocketManager
@@ -36,9 +35,6 @@ CONFIG = {
     'PRELOAD_CANDLES': int(os.getenv('PRELOAD_CANDLES', '250')),
     'SL_BUF':     float(os.getenv('SL_BUF', '10')),
 
-    'TECH_BOT': os.getenv('TECH_BOT', 'True') == 'True',
-    'FUND_BOT': os.getenv('FUND_BOT', 'True') == 'True',
-
     # === Trend voting ===
     'TREND_FILTER':   os.getenv('TREND_FILTER', 'True') == 'True',
     'TREND_LOOKBACK': int(os.getenv('TREND_LOOKBACK', '20')),
@@ -56,9 +52,7 @@ CONFIG = {
     'MAX_TRAIL_R': float(os.getenv('MAX_TRAIL_R', '10.0')),
     'COMM_RATE':   float(os.getenv('COMM_RATE', '0.0005')),
 
-    # === Fundamental (faqat xabar) ===
-    'NEWS_CHECK_SEC':         int(os.getenv('NEWS_CHECK_SEC', '300')),
-
+    # === Hisobot ===
     'CHART_CANDLES': int(os.getenv('CHART_CANDLES', '100')),
     'REPORT_HOUR':   int(os.getenv('REPORT_HOUR', '18')),
     'SOCKET_TIMEOUT_MIN':  int(os.getenv('SOCKET_TIMEOUT_MIN', '30')),
@@ -209,81 +203,6 @@ memory = BotMemory(CONFIG['MEMORY_DB_PATH'])
 
 
 # ============================================================
-# 📰 FUNDAMENTAL (faqat xabar)
-# ============================================================
-class NewsBot:
-    def __init__(self):
-        self.last_check = 0
-        self.seen_news = set()
-        self.high_impact_until = 0
-        self.last_text = ""
-        self.affected = []
-
-    async def fetch_news(self):
-        try:
-            url = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
-            params = {"type": 1, "pageNo": 1, "pageSize": 20}
-            headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, headers=headers, timeout=10) as resp:
-                    if resp.status != 200: return []
-                    data = await resp.json()
-                    lst = []
-                    for cat in data.get('data', {}).get('catalogs', []):
-                        for art in cat.get('articles', []):
-                            lst.append({'id': art.get('id'), 'title': art.get('title', ''),
-                                        'release_date': art.get('releaseDate', 0)})
-                    return lst
-        except: return []
-
-    def is_high(self, title):
-        t = title.lower()
-        kws = ['listing', 'delisting', 'halt', 'suspend', 'resume', 'hard fork',
-               'upgrade', 'mainnet', 'launch', 'halving', 'airdrop', 'partnership',
-               'sec', 'regulation', 'lawsuit', 'ban']
-        return any(k in t for k in kws)
-
-    def which_symbols(self, title):
-        tu = title.upper()
-        aff = []
-        for sym in CONFIG['SYMBOLS']:
-            base = sym.replace('USDT', '')
-            if base in tu: aff.append(sym)
-        return aff
-
-    async def check(self):
-        now = time.time()
-        if now - self.last_check < CONFIG['NEWS_CHECK_SEC']: return
-        self.last_check = now
-        news = await self.fetch_news()
-        for n in news:
-            nid = n['id']
-            if nid in self.seen_news: continue
-            self.seen_news.add(nid)
-            if self.is_high(n['title']):
-                aff = self.which_symbols(n['title'])
-                self.high_impact_until = now + 7200
-                self.last_text = n['title']
-                self.affected = aff
-                sym_str = ', '.join(aff) if aff else 'BOZOR'
-                await tg.send(
-                    f"📰 <b>FUNDAMENTAL YANGILIK</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"🎯 Ta'sir: <b>{sym_str}</b>\n"
-                    f"📌 {n['title'][:200]}\n"
-                    f"⚠️ <i>Faqat xabar — savdoga ta'sir qilmaydi</i>"
-                )
-
-    def get_context(self):
-        if time.time() >= self.high_impact_until: return ""
-        rem = int((self.high_impact_until - time.time()) / 60)
-        return f"\n📰 Fundamental: {rem}m volatillik"
-
-
-news_bot = NewsBot()
-
-
-# ============================================================
 # GRAFIK
 # ============================================================
 def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None):
@@ -412,7 +331,6 @@ class Engine:
         return 'WEAK'
 
     def detect_trend(self):
-        """3 usul → ovozlar"""
         self.trend_methods['HH/HL'] = self._t_hh_hl()
         self.trend_methods['S/R']   = self._t_sr()
         self.trend_methods['BigC']  = self._t_big()
@@ -526,43 +444,38 @@ class Engine:
         self.checkDayReset()
         if self.trading_paused: return
 
-        setup_key = f"2C"
+        setup_key = "2C"
 
-        # ============ 1. TREND (ovoz bilan) ============
+        # 1. TREND
         trend, votes = self.detect_trend()
         self.current_trend = trend
 
         if CONFIG['TREND_FILTER']:
             if trend == 'WEAK' or votes < 2:
                 self.trend_blocks += 1
-                log.info(f"⛔ {self.symbol}: votes {votes}/3, trend {trend} — o'tkazildi")
+                log.info(f"⛔ {self.symbol}: votes {votes}/3, {trend}")
                 return
             if trend == 'STRONG_UP' and signal['type'] != 'B':
                 self.trend_blocks += 1
-                log.info(f"⛔ {self.symbol}: STRONG_UP, SELL o'tkazildi")
                 return
             if trend == 'STRONG_DOWN' and signal['type'] != 'S':
                 self.trend_blocks += 1
-                log.info(f"⛔ {self.symbol}: STRONG_DOWN, BUY o'tkazildi")
                 return
 
-        # ============ 2. MEMORY ============
+        # 2. MEMORY
         blocked, stats = memory.should_block(setup_key, trend, votes)
         if blocked:
             self.memory_blocks += 1
-            log.info(f"🧠 {self.symbol}: MEMORY blokladi {setup_key}|{trend}|V{votes}")
+            log.info(f"🧠 {self.symbol}: MEMORY blokladi")
             return
 
-        # ============ 3. OVOZGA QARAB POZITSIYALAR ============
+        # 3. OVOZGA QARAB POZITSIYALAR
         if votes >= 3:
-            parts = ['A', 'B', 'C', 'D']  # 4 ta pozitsiya
-            levels = 4
+            parts = ['A', 'B', 'C', 'D']; levels = 4
         else:
-            parts = ['A', 'B']            # 2 ta pozitsiya
-            levels = 2
+            parts = ['A', 'B']; levels = 2
 
         if len(self.positions) + levels > CONFIG['MAX_OPEN_POS']:
-            log.info(f"{self.symbol}: joy yo'q ({len(self.positions)}/{CONFIG['MAX_OPEN_POS']}, kerak {levels})")
             return
         if self.last_signal_time == candle['time']:
             return
@@ -583,7 +496,6 @@ class Engine:
         action = "BUY" if signal['type'] == 'B' else "SELL"
         emoji = "🟢" if signal['type'] == 'B' else "🔴"
         trend_emoji = "📈" if trend == 'STRONG_UP' else "📉"
-        fund_note = news_bot.get_context()
 
         mem_line = ""
         if stats:
@@ -599,7 +511,7 @@ class Engine:
             f"🛡 SL: ${p['sl']:.4f}\n"
             f"💰 Lot (har biri): {p['lot']}\n"
             f"🎯 <b>Pozitsiyalar: {' + '.join(opened)} ({levels} ta)</b>\n"
-            f"📂 Ochiq: <b>{len(self.positions)}/{CONFIG['MAX_OPEN_POS']}</b>{fund_note}\n"
+            f"📂 Ochiq: <b>{len(self.positions)}/{CONFIG['MAX_OPEN_POS']}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
 
@@ -631,7 +543,7 @@ class Engine:
         self.trades.append(p)
         self.positions.remove(p)
 
-        # Memory
+        # Memory ga yozish
         memory.record(self.symbol, "2C", p.get('trend_at_entry', 'WEAK'),
                       p.get('votes_at_entry', 0), p['type'],
                       p.get('part', 'A'), p['result'], p['exitR'], net,
@@ -706,15 +618,6 @@ async def worker(client, symbol):
             await asyncio.sleep(5)
 
 
-async def news_worker():
-    if not CONFIG['FUND_BOT']: return
-    log.info("📰 News bot (faqat xabar)")
-    while True:
-        try: await news_bot.check()
-        except: pass
-        await asyncio.sleep(30)
-
-
 async def health_check():
     warned = {}
     while True:
@@ -786,18 +689,17 @@ async def daily_report():
 
 
 async def main():
-    log.info("🚀 Bot v8.0.0 — VOTING + MEMORY + PYRAMID")
+    log.info("🚀 Bot v8.1.0 — VOTING + MEMORY + PYRAMID")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v8.0.0</b>\n"
+        f"🚀 <b>Engulfing Bot v8.1.0</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 2C Engulfing (o'zgarmas)\n"
         f"📊 Trend: HH/HL + S/R + BigCandle\n"
         f"🗳 <b>2 ovoz → A+B (2 pozitsiya)</b>\n"
         f"🗳 <b>3 ovoz → A+B+C+D (4 pozitsiya)</b>\n"
         f"🧠 Memory: yomon setup'larni bloklaydi\n"
-        f"📰 Fundamental: faqat xabar\n"
         f"📊 {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"✅ Aktiv"
@@ -808,8 +710,6 @@ async def main():
     tasks.append(asyncio.create_task(daily_report()))
     tasks.append(asyncio.create_task(health_check()))
     tasks.append(asyncio.create_task(daily_diagnostics()))
-    if CONFIG['FUND_BOT']:
-        tasks.append(asyncio.create_task(news_worker()))
 
     try:
         await asyncio.gather(*tasks)
