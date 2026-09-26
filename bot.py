@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.6.2 — SIGNAL-ONLY MODE + Chart Markers + Yangi Engulfing Mantiq
+# EngulfingTrend Bot v5.6.3 — SIGNAL-ONLY MODE + Faqat 2-Candle Engulfing
 # ============================================================
 import os
 import asyncio
@@ -89,11 +89,6 @@ tg = TG(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
 # GRAFIK YARATISH (signal nuqtalari BUY/SELL yozuv bilan belgilanadi)
 # ============================================================
 def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None):
-    """
-    candles         — ko'rsatiladigan candle'lar ro'yxati
-    trades          — yopilgan (tugagan) savdolar
-    open_positions  — hozir ochiq turgan (hali yopilmagan) signal/pozitsiyalar
-    """
     try:
         if not candles: return None
         df = pd.DataFrame(candles[-CONFIG['CHART_CANDLES']:])
@@ -111,9 +106,8 @@ def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None
         index_list = list(df.index)
 
         def mark_point(entry_time, entry_price, side, label_extra=""):
-            """Berilgan vaqt/narxga BUY yoki SELL yozuvi va o'q belgisini chizadi."""
             try:
-                tt = datetime.utcfromtimestamp(entry_time)   # UTC bilan, df bilan mos
+                tt = datetime.utcfromtimestamp(entry_time)
                 if tt in index_list:
                     i = index_list.index(tt)
                 else:
@@ -140,11 +134,9 @@ def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None
             except Exception:
                 pass
 
-        # Yopilgan (tugagan) savdolar — oxirgi 30 tasi
         for t in trades[-30:]:
             mark_point(t['time'], t['entry'], t['type'], label_extra=f"{t.get('engulfCandles','')}C")
 
-        # Hozir ochiq turgan signal/pozitsiyalar — alohida belgilanadi
         if open_positions:
             for p in open_positions:
                 mark_point(p['time'], p['entry'], p['type'], label_extra=f"{p.get('engulfCandles','')}C (ochiq)")
@@ -209,16 +201,7 @@ class Engine:
         maxHigh2 = max(p1['high'], p2['high'])
         minLow2  = min(p1['low'],  p2['low'])
 
-        # 1-candle: joriy candle 1 ta oldingi qarama-qarshi rangdagi candle'ni yorib o'tadi (fitil bilan)
-        bull1 = (cur['close'] > cur['open']         # joriy KO'K
-                 and p1['close'] < p1['open']       # oldingi QIZIL
-                 and cur['high'] > p1['high'])       # yuqoriga yorib o'tadi
-
-        bear1 = (cur['close'] < cur['open']         # joriy QIZIL
-                 and p1['close'] > p1['open']       # oldingi KO'K
-                 and cur['low'] < p1['low'])          # pastga yorib o'tadi
-
-        # 2-candle: joriy candle 2 ta oldingi qarama-qarshi rangdagi candle'ni yorib o'tadi (fitil bilan)
+        # FAQAT 2-candle: joriy candle 2 ta oldingi qarama-qarshi rangdagi candle'ni yorib o'tadi (fitil bilan)
         bull2 = (cur['close'] > cur['open']         # joriy KO'K
                  and p1['close'] < p1['open']       # oldingi 2 tasi QIZIL
                  and p2['close'] < p2['open']
@@ -229,8 +212,8 @@ class Engine:
                  and p2['close'] > p2['open']
                  and cur['low'] < minLow2)             # ikkalasini pastga yorib o'tadi
 
-        if bull1 or bull2: return {'type': 'B', 'candles': 2 if bull2 else 1}
-        if bear1 or bear2: return {'type': 'S', 'candles': 2 if bear2 else 1}
+        if bull2: return {'type': 'B', 'candles': 2}
+        if bear2: return {'type': 'S', 'candles': 2}
         return None
 
     def openLocal(self, signal, candle):
@@ -541,19 +524,13 @@ async def daily_diagnostics():
             text += f"🏆 Eng yaxshi: {best_sym} ({(best_eng.balance - best_eng.initial):+.2f}$)\n"
             text += f"💔 Eng yomon: {worst_sym} ({(worst_eng.balance - worst_eng.initial):+.2f}$)\n\n"
 
-            total_1c_w = sum(e.stats_1c['wins'] for e in ENGINES.values())
-            total_1c_l = sum(e.stats_1c['losses'] for e in ENGINES.values())
-            total_1c_net = sum(e.stats_1c['net'] for e in ENGINES.values())
             total_2c_w = sum(e.stats_2c['wins'] for e in ENGINES.values())
             total_2c_l = sum(e.stats_2c['losses'] for e in ENGINES.values())
             total_2c_net = sum(e.stats_2c['net'] for e in ENGINES.values())
-            t1 = total_1c_w + total_1c_l
             t2 = total_2c_w + total_2c_l
-            wr1 = total_1c_w / t1 * 100 if t1 > 0 else 0
             wr2 = total_2c_w / t2 * 100 if t2 > 0 else 0
 
-            text += (f"1-Candle: ✅{total_1c_w} ❌{total_1c_l} (WR {wr1:.1f}%) | ${total_1c_net:+.2f}\n"
-                     f"2-Candle: ✅{total_2c_w} ❌{total_2c_l} (WR {wr2:.1f}%) | ${total_2c_net:+.2f}\n\n")
+            text += (f"2-Candle: ✅{total_2c_w} ❌{total_2c_l} (WR {wr2:.1f}%) | ${total_2c_net:+.2f}\n\n")
 
             text += "📂 Symbol bo'yicha:\n"
             for sym, e in ENGINES.items():
@@ -600,19 +577,19 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.6.2 ishga tushdi — SIGNAL-ONLY MODE + Yangi Engulfing Mantiq")
+    log.info("🚀 Bot v5.6.3 ishga tushdi — SIGNAL-ONLY MODE + Faqat 2-Candle Engulfing")
     log.info("⚠️ HECH QANDAY REAL ORDER YUBORILMAYDI — faqat real bozor narxidan signal aniqlanadi")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.6.2 — SIGNAL-ONLY</b>\n"
+        f"🚀 <b>Engulfing Bot v5.6.3 — SIGNAL-ONLY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <b>Real order YO'Q — faqat signal kuzatuvi</b>\n"
         f"📊 Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"🌐 Ma'lumot manbai: <b>Real Binance bozori</b>\n"
         f"⚖️ Virtual risk/trade: {CONFIG['RISK_PCT']*100:.1f}%\n"
-        f"🎯 Engulfing: fitil (high/low) bilan, rang filtri bilan\n"
+        f"🎯 Engulfing: FAQAT 2-Candle (fitil bilan, rang filtri bilan)\n"
         f"✅ Bot aktiv"
     )
 
