@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.6 — SIGNAL-ONLY MODE (real market data, real order YO'Q)
+# EngulfingTrend Bot v5.6.1 — SIGNAL-ONLY MODE + Chart Markers
 # ============================================================
 import os
 import asyncio
@@ -86,9 +86,14 @@ tg = TG(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
 
 
 # ============================================================
-# GRAFIK YARATISH
+# GRAFIK YARATISH (endi signal nuqtalari BUY/SELL yozuv bilan belgilanadi)
 # ============================================================
-def make_chart(candles, trades, symbol, interval, suffix=""):
+def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None):
+    """
+    candles         — ko'rsatiladigan candle'lar ro'yxati
+    trades          — yopilgan (tugagan) savdolar
+    open_positions  — hozir ochiq turgan (hali yopilmagan) signal/pozitsiyalar
+    """
     try:
         if not candles: return None
         df = pd.DataFrame(candles[-CONFIG['CHART_CANDLES']:])
@@ -103,15 +108,46 @@ def make_chart(candles, trades, symbol, interval, suffix=""):
             ax.plot([i, i], [row['low'], row['high']], color=c, linewidth=1)
             ax.plot([i, i], [row['open'], row['close']], color=c, linewidth=4)
 
-        for t in trades[-30:]:
+        index_list = list(df.index)
+
+        def mark_point(entry_time, entry_price, side, label_extra=""):
+            """Berilgan vaqt/narxga BUY yoki SELL yozuvi va o'q belgisini chizadi."""
             try:
-                tt = datetime.fromtimestamp(t['time'])
-                if tt in df.index:
-                    i = list(df.index).index(tt)
-                    c = '#10b981' if t['type'] == 'B' else '#ef4444'
-                    m = '^' if t['type'] == 'B' else 'v'
-                    ax.scatter(i, t['entry'], color=c, marker=m, s=120, zorder=5)
-            except: pass
+                tt = datetime.fromtimestamp(entry_time)
+                if tt in index_list:
+                    i = index_list.index(tt)
+                else:
+                    return
+                is_buy = (side == 'B')
+                color = '#10b981' if is_buy else '#ef4444'
+                marker = '^' if is_buy else 'v'
+                text = ("BUY" if is_buy else "SELL") + (f" {label_extra}" if label_extra else "")
+                y_offset = (df['high'].max() - df['low'].min()) * 0.02
+                y_pos = entry_price - y_offset if is_buy else entry_price + y_offset
+
+                ax.scatter(i, entry_price, color=color, marker=marker, s=160, zorder=6, edgecolors='white', linewidths=0.5)
+                ax.annotate(
+                    text,
+                    xy=(i, entry_price),
+                    xytext=(i, y_pos),
+                    color=color,
+                    fontsize=8,
+                    fontweight='bold',
+                    ha='center',
+                    va='top' if is_buy else 'bottom',
+                    zorder=7
+                )
+            except Exception:
+                pass
+
+        # Yopilgan (tugagan) savdolar — oxirgi 30 tasi
+        for t in trades[-30:]:
+            mark_point(t['time'], t['entry'], t['type'], label_extra=f"{t.get('engulfCandles','')}C")
+
+        # Hozir ochiq turgan signal/pozitsiyalar — alohida belgilanadi
+        if open_positions:
+            for p in open_positions:
+                mark_point(p['time'], p['entry'], p['type'], label_extra=f"{p.get('engulfCandles','')}C (ochiq)")
 
         ax.set_title(f'{symbol} · {interval} {suffix}',
                      color='#e2e8f0', fontsize=14, pad=15)
@@ -260,10 +296,6 @@ class Engine:
             self.trading_paused = False
 
     async def openSignal(self, signal, candle):
-        """
-        DIQQAT: bu yerda hech qanday real order yuborilmaydi.
-        Faqat signal aniqlanadi, virtual pozitsiya ochiladi va Telegram'ga xabar beriladi.
-        """
         self.checkDayReset()
 
         if self.trading_paused:
@@ -294,13 +326,14 @@ class Engine:
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
 
+        # Chart'da endi ochiq (hali yopilmagan) signal ham belgilanadi
         ch = make_chart(self.candles, self.trades, self.symbol,
-                        CONFIG['INTERVAL'], f"· {action} (signal)")
+                        CONFIG['INTERVAL'], f"· {action} (signal)",
+                        open_positions=self.positions)
         if ch:
             await tg.photo(ch, f"📊 {self.symbol} · {action} signal")
 
     async def closeSignal(self, p):
-        """Virtual pozitsiyani yopish — hech qanday real order yo'q."""
         open_comm  = p['lot'] * p['entry'] * CONFIG['COMM_RATE']
         close_comm = p['lot'] * p['exit']  * CONFIG['COMM_RATE']
         total_comm = open_comm + close_comm
@@ -343,6 +376,13 @@ class Engine:
             f"📈 (virtual) Balans: <b>${self.balance:.2f}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
+
+        # Yopilgandan keyin ham yangilangan chart — endi bu savdo "yopilgan" (trades) sifatida belgilanadi
+        ch = make_chart(self.candles, self.trades, self.symbol,
+                        CONFIG['INTERVAL'], "· yopildi",
+                        open_positions=self.positions)
+        if ch:
+            await tg.photo(ch, f"📊 {self.symbol} · yopildi ({p['result']})")
 
         self.checkDayReset()
         day_loss_pct = (self.day_start_balance - self.balance) / self.day_start_balance if self.day_start_balance > 0 else 0
@@ -553,22 +593,22 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.6 ishga tushdi — SIGNAL-ONLY MODE")
+    log.info("🚀 Bot v5.6.1 ishga tushdi — SIGNAL-ONLY MODE + Chart Markers")
     log.info("⚠️ HECH QANDAY REAL ORDER YUBORILMAYDI — faqat real bozor narxidan signal aniqlanadi")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.6 — SIGNAL-ONLY</b>\n"
+        f"🚀 <b>Engulfing Bot v5.6.1 — SIGNAL-ONLY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ <b>Real order YO'Q — faqat signal kuzatuvi</b>\n"
         f"📊 Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"🌐 Ma'lumot manbai: <b>Real Binance bozori</b>\n"
         f"⚖️ Virtual risk/trade: {CONFIG['RISK_PCT']*100:.1f}%\n"
+        f"📍 Chart'da endi BUY/SELL belgilar ko'rsatiladi\n"
         f"✅ Bot aktiv"
     )
 
-    # Diqqat: API key/secret shart emas — faqat public market data o'qiladi
     client = await AsyncClient.create()
 
     tasks = [asyncio.create_task(worker(client, s)) for s in CONFIG['SYMBOLS']]
