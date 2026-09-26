@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.5 — FINAL (Diagnostics + Health-check + Daily Loss Guard)
+# EngulfingTrend Bot v5.6 — SIGNAL-ONLY MODE (real market data, real order YO'Q)
 # ============================================================
 import os
 import asyncio
@@ -9,7 +9,6 @@ import io
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from binance import AsyncClient, BinanceSocketManager
-from binance.enums import SIDE_BUY, SIDE_SELL, ORDER_TYPE_MARKET
 from telegram import Bot, InputFile
 from telegram.constants import ParseMode
 import matplotlib
@@ -23,11 +22,8 @@ load_dotenv()
 # SOZLAMALAR
 # ============================================================
 CONFIG = {
-    'API_KEY':    os.getenv('BINANCE_API_KEY'),
-    'API_SECRET': os.getenv('BINANCE_API_SECRET'),
-    'TESTNET':    os.getenv('TESTNET', 'True') == 'True',
     'SYMBOLS':    [s.strip().upper() for s in os.getenv('SYMBOLS', 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT').split(',') if s.strip()],
-    'INTERVAL':   os.getenv('INTERVAL', '5m'),
+    'INTERVAL':   os.getenv('INTERVAL', '1m'),
     'BALANCE':    float(os.getenv('BALANCE', '1000')),
     'RISK_PCT':   float(os.getenv('RISK_PCT', '0.05')),
     'LOT_MIN':    float(os.getenv('LOT_MIN', '0.001')),
@@ -36,15 +32,12 @@ CONFIG = {
     'PRELOAD_CANDLES': int(os.getenv('PRELOAD_CANDLES', '100')),
     'SL_BUF':     10,
     'BE_AT_R':    1.0,
-    'TRAIL_STEP': 1.0,
     'COMM_RATE':  0.0005,
     'CHART_CANDLES': 100,
     'REPORT_HOUR':   18,
-
-    # --- YANGI: kuzatuv va himoya sozlamalari (strategiyaga tegmaydi) ---
-    'SOCKET_TIMEOUT_MIN':  int(os.getenv('SOCKET_TIMEOUT_MIN', '30')),   # necha daqiqa candle kelmasa ogohlantirish
-    'MAX_DAILY_LOSS_PCT':  float(os.getenv('MAX_DAILY_LOSS_PCT', '0.15')),  # kunlik max zarar % (balансdan)
-    'DIAGNOSTICS_HOUR':    int(os.getenv('DIAGNOSTICS_HOUR', '9')),      # kunlik diagnostika xabari soati (UTC)
+    'SOCKET_TIMEOUT_MIN':  int(os.getenv('SOCKET_TIMEOUT_MIN', '30')),
+    'MAX_DAILY_LOSS_PCT':  float(os.getenv('MAX_DAILY_LOSS_PCT', '0.15')),
+    'DIAGNOSTICS_HOUR':    int(os.getenv('DIAGNOSTICS_HOUR', '9')),
 }
 
 TELEGRAM_TOKEN   = os.getenv('TELEGRAM_TOKEN')
@@ -139,7 +132,7 @@ def make_chart(candles, trades, symbol, interval, suffix=""):
 
 
 # ============================================================
-# TRADE ENGINE
+# TRADE ENGINE (FAQAT SIMULYATSIYA — HECH QANDAY REAL ORDER YO'Q)
 # ============================================================
 class Engine:
     def __init__(self, symbol):
@@ -156,25 +149,21 @@ class Engine:
         self.total_comm = 0.0
         self.gross_pnl = 0.0
 
-        # --- YANGI: diagnostika uchun statistika (faqat kuzatuv, mantiqqa ta'sir qilmaydi) ---
-        self.last_candle_time = None          # oxirgi kline qachon kelgani (health-check uchun)
-        self.stats_1c = {'wins': 0, 'losses': 0, 'net': 0.0}   # 1-candle engulfing statistikasi
-        self.stats_2c = {'wins': 0, 'losses': 0, 'net': 0.0}   # 2-candle engulfing statistikasi
-        self.day_start_balance = CONFIG['BALANCE']  # kun boshidagi balans (daily loss guard uchun)
-        self.day_key = None                    # joriy kun (YYYY-MM-DD), kun almashganda reset qilish uchun
-        self.trading_paused = False            # daily loss limitiga yetsa True bo'ladi
+        self.last_candle_time = None
+        self.stats_1c = {'wins': 0, 'losses': 0, 'net': 0.0}
+        self.stats_2c = {'wins': 0, 'losses': 0, 'net': 0.0}
+        self.day_start_balance = CONFIG['BALANCE']
+        self.day_key = None
+        self.trading_paused = False
 
     def calcLot(self, slDist, price):
         risk_amount = self.balance * CONFIG['RISK_PCT']
         if slDist <= 0 or price <= 0:
             return CONFIG['LOT_MIN']
-
         lot = risk_amount / slDist
         lot = max(CONFIG['LOT_MIN'], min(lot, CONFIG['LOT_MAX']))
-
         max_lot_by_balance = self.balance / price
         lot = min(lot, max_lot_by_balance)
-
         return round(lot, 3)
 
     def checkEngulfing(self, cd, idx):
@@ -261,7 +250,6 @@ class Engine:
 
         return False
 
-    # --- YANGI: kun almashganda kunlik balans hisobini reset qilish ---
     def checkDayReset(self):
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         if self.day_key != today:
@@ -271,12 +259,15 @@ class Engine:
                 log.info(f"{self.symbol}: yangi kun boshlandi, savdo qayta yoqildi")
             self.trading_paused = False
 
-    async def openReal(self, client, signal, candle):
+    async def openSignal(self, signal, candle):
+        """
+        DIQQAT: bu yerda hech qanday real order yuborilmaydi.
+        Faqat signal aniqlanadi, virtual pozitsiya ochiladi va Telegram'ga xabar beriladi.
+        """
         self.checkDayReset()
 
-        # --- YANGI: kunlik zarar limiti tekshiruvi (faqat himoya, entry logikasiga tegmaydi) ---
         if self.trading_paused:
-            log.info(f"{self.symbol}: kunlik zarar limiti tufayli savdo to'xtatilgan, signal o'tkazib yuborildi")
+            log.info(f"{self.symbol}: kunlik zarar limiti tufayli signal e'tiborga olinmadi")
             return
 
         if len(self.positions) >= CONFIG['MAX_OPEN_POS']:
@@ -286,56 +277,30 @@ class Engine:
         p = self.openLocal(signal, candle)
         if not p: return
 
-        try:
-            side = SIDE_BUY if signal['type'] == 'B' else SIDE_SELL
-            order = await client.create_order(
-                symbol=self.symbol, side=side,
-                type=ORDER_TYPE_MARKET, quantity=p['lot']
-            )
-            fill = float(order['fills'][0]['price'])
-            p['entry'] = fill
+        self.positions.append(p)
+        log.info(f"📡 SIGNAL {self.symbol} {signal['type']} @ ${p['entry']} | lot={p['lot']} (virtual, order YO'Q) | ochiq: {len(self.positions)}")
 
-            if p['type'] == 'B':
-                p['sl'] = fill - p['slDist']
-            else:
-                p['sl'] = fill + p['slDist']
+        action = "BUY" if signal['type'] == 'B' else "SELL"
+        emoji = "🟢" if signal['type'] == 'B' else "🔴"
+        await tg.send(
+            f"{emoji} <b>SIGNAL: {action} {self.symbol}</b> 📡\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Narx: <b>${p['entry']:.4f}</b>\n"
+            f"🛡 (virtual) SL: ${p['sl']:.4f}\n"
+            f"💰 (virtual) Lot: {p['lot']} (risk: ${p['riskPerR']:.2f})\n"
+            f"🎯 Engulf: <b>{p['engulfCandles']}C</b>\n"
+            f"📂 Ochiq signal: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}\n"
+            f"⚠️ <i>Bu faqat signal — hech qanday real yoki testnet order yuborilmadi.</i>\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        )
 
-            self.positions.append(p)
-            log.info(f"✅ {self.symbol} {signal['type']} @ ${fill} | lot={p['lot']} | risk=${p['riskPerR']:.2f} | ochiq: {len(self.positions)}")
+        ch = make_chart(self.candles, self.trades, self.symbol,
+                        CONFIG['INTERVAL'], f"· {action} (signal)")
+        if ch:
+            await tg.photo(ch, f"📊 {self.symbol} · {action} signal")
 
-            action = "BUY" if signal['type'] == 'B' else "SELL"
-            emoji = "🟢" if signal['type'] == 'B' else "🔴"
-            await tg.send(
-                f"{emoji} <b>{action} {self.symbol}</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 Entry: <b>${fill:.4f}</b>\n"
-                f"🛡 SL: ${p['sl']:.4f}\n"
-                f"💰 Lot: {p['lot']} (risk: ${p['riskPerR']:.2f})\n"
-                f"🎯 Engulf: <b>{p['engulfCandles']}C</b>\n"
-                f"📂 Ochiq pozitsiyalar: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}\n"
-                f"💵 Balans: ${self.balance:.2f}\n"
-                f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-            )
-
-            ch = make_chart(self.candles, self.trades, self.symbol,
-                            CONFIG['INTERVAL'], f"· {action}")
-            if ch:
-                await tg.photo(ch, f"📊 {self.symbol} · {action}")
-
-        except Exception as e:
-            log.error(f"{self.symbol} order xato: {e}")
-
-    async def closeReal(self, client, p):
-        try:
-            side = SIDE_SELL if p['type'] == 'B' else SIDE_BUY
-            await client.create_order(
-                symbol=self.symbol, side=side,
-                type=ORDER_TYPE_MARKET, quantity=p['lot']
-            )
-        except Exception as e:
-            log.error(f"{self.symbol} close xato: {e}")
-            return
-
+    async def closeSignal(self, p):
+        """Virtual pozitsiyani yopish — hech qanday real order yo'q."""
         open_comm  = p['lot'] * p['entry'] * CONFIG['COMM_RATE']
         close_comm = p['lot'] * p['exit']  * CONFIG['COMM_RATE']
         total_comm = open_comm + close_comm
@@ -356,7 +321,6 @@ class Engine:
         else:
             p['result'] = 'BE'; self.bes += 1
 
-        # --- YANGI: engulfing turi bo'yicha statistika (faqat kuzatuv) ---
         target_stats = self.stats_1c if p['engulfCandles'] == 1 else self.stats_2c
         target_stats['net'] += net_pnl
         if net_pnl > 0.01:
@@ -367,35 +331,27 @@ class Engine:
         self.trades.append(p)
         self.positions.remove(p)
 
-        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | gross ${p['pnl']:+.2f} | comm -${total_comm:.2f} | net ${net_pnl:+.2f} | balans ${self.balance:.2f} | ochiq: {len(self.positions)}")
+        log.info(f"{self.symbol}: {p['exitR']:+.2f}R | net ${net_pnl:+.2f} | balans ${self.balance:.2f} (virtual) | ochiq: {len(self.positions)}")
 
         emoji = "✅" if p['result'] == 'W' else "❌" if p['result'] == 'L' else "⚪"
         await tg.send(
-            f"{emoji} <b>Yopildi {self.symbol}</b>\n"
+            f"{emoji} <b>SIGNAL yopildi: {self.symbol}</b> 📡\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 Exit: ${p['exit']:.4f}\n"
+            f"📊 Exit narx: ${p['exit']:.4f}\n"
             f"🎯 R: <b>{p['exitR']:+.2f}R</b> ({p['engulfCandles']}C)\n"
-            f"💵 Gross: ${p['pnl']:+.2f}\n"
-            f"🔻 Komissiya: -${total_comm:.2f}\n"
-            f"💰 <b>Net: ${net_pnl:+.2f}</b>\n"
-            f"📂 Ochiq pozitsiyalar: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}\n"
-            f"📈 Balans: <b>${self.balance:.2f}</b>\n"
+            f"💰 <b>(virtual) Net: ${net_pnl:+.2f}</b>\n"
+            f"📈 (virtual) Balans: <b>${self.balance:.2f}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
 
-        # --- YANGI: kunlik zarar limiti tekshiruvi ---
         self.checkDayReset()
         day_loss_pct = (self.day_start_balance - self.balance) / self.day_start_balance if self.day_start_balance > 0 else 0
         if day_loss_pct >= CONFIG['MAX_DAILY_LOSS_PCT'] and not self.trading_paused:
             self.trading_paused = True
             await tg.send(
-                f"🛑 <b>{self.symbol}: KUNLIK ZARAR LIMITI!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"🛑 <b>{self.symbol}: KUNLIK ZARAR LIMITI (virtual)!</b>\n"
                 f"📉 Bugungi zarar: <b>-{day_loss_pct*100:.1f}%</b>\n"
-                f"💵 Kun boshi balans: ${self.day_start_balance:.2f}\n"
-                f"💵 Hozirgi balans: ${self.balance:.2f}\n"
-                f"⏸ Bu symbol uchun yangi savdo ertangi kungacha to'xtatildi.\n"
-                f"(Ochiq pozitsiyalar hali ham SL/trailing bilan boshqariladi)"
+                f"⏸ Yangi signal ertangi kungacha e'tiborga olinmaydi."
             )
 
 
@@ -406,7 +362,7 @@ ENGINES = {}
 
 
 # ============================================================
-# TARIXIY CANDLE'LARNI OLDINDAN YUKLASH
+# TARIXIY CANDLE'LARNI OLDINDAN YUKLASH (REAL BOZORDAN, FAQAT O'QISH)
 # ============================================================
 async def preload_candles(client, eng, symbol):
     try:
@@ -426,18 +382,18 @@ async def preload_candles(client, eng, symbol):
                 'closed': True,
             })
         eng.candles = candles
-        log.info(f"📥 {symbol}: {len(candles)} ta tarixiy candle yuklandi")
+        log.info(f"📥 {symbol}: {len(candles)} ta tarixiy candle yuklandi (real bozor)")
     except Exception as e:
         log.error(f"{symbol} preload xato: {e}")
 
 
 # ============================================================
-# WORKER (BinanceSocketManager bilan — async, barqaror)
+# WORKER (real Binance market data, hech qanday order yo'q)
 # ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
     ENGINES[symbol] = eng
-    log.info(f"🔵 {symbol} worker boshlandi")
+    log.info(f"🔵 {symbol} worker boshlandi (SIGNAL-ONLY, real bozor narxi)")
 
     await preload_candles(client, eng, symbol)
 
@@ -447,13 +403,12 @@ async def worker(client, symbol):
         try:
             socket = bsm.kline_socket(symbol=symbol, interval=CONFIG['INTERVAL'])
             async with socket as stream:
-                log.info(f"🟢 {symbol} socket ulandi")
+                log.info(f"🟢 {symbol} socket ulandi (real market data)")
                 while True:
                     msg = await stream.recv()
                     if not msg or msg.get('e') != 'kline':
                         continue
 
-                    # --- YANGI: har kelgan kline vaqtini yozib boramiz (health-check uchun) ---
                     eng.last_candle_time = time.time()
 
                     k = msg['k']
@@ -476,12 +431,12 @@ async def worker(client, symbol):
                         idx = len(eng.candles) - 1
                         sig = eng.checkEngulfing(eng.candles, idx)
                         if sig:
-                            await eng.openReal(client, sig, candle)
+                            await eng.openSignal(sig, candle)
 
                     for p in list(eng.positions):
                         closed = eng.manageLocal(p, candle)
                         if closed:
-                            await eng.closeReal(client, p)
+                            await eng.closeSignal(p)
 
         except Exception as e:
             log.error(f"{symbol} socket xato: {e} — 5s dan keyin qayta ulanadi")
@@ -489,12 +444,12 @@ async def worker(client, symbol):
 
 
 # ============================================================
-# YANGI: HEALTH-CHECK — socket 30+ daqiqa "jim" qolsa ogohlantirish
+# HEALTH-CHECK
 # ============================================================
 async def health_check():
-    warned = {}  # symbol -> allaqachon ogohlantirilganmi (spam bo'lmasligi uchun)
+    warned = {}
     while True:
-        await asyncio.sleep(60)  # har daqiqa tekshiradi
+        await asyncio.sleep(60)
         now = time.time()
         timeout_sec = CONFIG['SOCKET_TIMEOUT_MIN'] * 60
 
@@ -508,17 +463,14 @@ async def health_check():
                 minutes = int(silent_for // 60)
                 await tg.send(
                     f"⚠️ <b>DIQQAT: {sym} socket jim!</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"So'nggi {minutes} daqiqadan beri yangi ma'lumot kelmayapti.\n"
-                    f"Websocket uzilib qolgan yoki qayta ulanish jarayonida bo'lishi mumkin.\n"
-                    f"Deploy Logs'ni tekshirib ko'ring."
+                    f"So'nggi {minutes} daqiqadan beri yangi ma'lumot kelmayapti."
                 )
             elif silent_for < timeout_sec and warned.get(sym, False):
-                warned[sym] = False  # yana ma'lumot kela boshlasa, keyingi safar yana ogohlantirish uchun reset
+                warned[sym] = False
 
 
 # ============================================================
-# YANGI: KUNLIK DIAGNOSTIKA — "qayerda ko'p xato, qayerda yaxshi"
+# KUNLIK DIAGNOSTIKA
 # ============================================================
 async def daily_diagnostics():
     sent_today = None
@@ -533,55 +485,36 @@ async def daily_diagnostics():
                 await asyncio.sleep(60)
                 continue
 
-            # Har symbol bo'yicha net PnL bo'yicha saralash
-            ranked = sorted(
-                ENGINES.items(),
-                key=lambda x: (x[1].balance - x[1].initial),
-                reverse=True
-            )
-
+            ranked = sorted(ENGINES.items(), key=lambda x: (x[1].balance - x[1].initial), reverse=True)
             best_sym, best_eng = ranked[0]
             worst_sym, worst_eng = ranked[-1]
 
-            text = (f"🔍 <b>KUNLIK DIAGNOSTIKA</b>\n"
-                    f"📅 {now.strftime('%d.%m.%Y')}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n")
+            text = (f"🔍 <b>KUNLIK DIAGNOSTIKA (signal-only)</b>\n"
+                    f"📅 {now.strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━━━━━\n\n")
+            text += f"🏆 Eng yaxshi: {best_sym} ({(best_eng.balance - best_eng.initial):+.2f}$)\n"
+            text += f"💔 Eng yomon: {worst_sym} ({(worst_eng.balance - worst_eng.initial):+.2f}$)\n\n"
 
-            text += f"🏆 <b>Eng yaxshi:</b> {best_sym} ({(best_eng.balance - best_eng.initial):+.2f}$)\n"
-            text += f"💔 <b>Eng yomon:</b> {worst_sym} ({(worst_eng.balance - worst_eng.initial):+.2f}$)\n\n"
-
-            text += "<b>📊 Engulfing turi bo'yicha (barcha symbollar jamlanган):</b>\n"
             total_1c_w = sum(e.stats_1c['wins'] for e in ENGINES.values())
             total_1c_l = sum(e.stats_1c['losses'] for e in ENGINES.values())
             total_1c_net = sum(e.stats_1c['net'] for e in ENGINES.values())
             total_2c_w = sum(e.stats_2c['wins'] for e in ENGINES.values())
             total_2c_l = sum(e.stats_2c['losses'] for e in ENGINES.values())
             total_2c_net = sum(e.stats_2c['net'] for e in ENGINES.values())
-
             t1 = total_1c_w + total_1c_l
             t2 = total_2c_w + total_2c_l
             wr1 = total_1c_w / t1 * 100 if t1 > 0 else 0
             wr2 = total_2c_w / t2 * 100 if t2 > 0 else 0
 
-            text += (f"├ 1-Candle: ✅{total_1c_w} ❌{total_1c_l} (WR {wr1:.1f}%) | Net: ${total_1c_net:+.2f}\n"
-                     f"└ 2-Candle: ✅{total_2c_w} ❌{total_2c_l} (WR {wr2:.1f}%) | Net: ${total_2c_net:+.2f}\n\n")
+            text += (f"1-Candle: ✅{total_1c_w} ❌{total_1c_l} (WR {wr1:.1f}%) | ${total_1c_net:+.2f}\n"
+                     f"2-Candle: ✅{total_2c_w} ❌{total_2c_l} (WR {wr2:.1f}%) | ${total_2c_net:+.2f}\n\n")
 
-            if total_1c_net < 0 and total_2c_net >= 0:
-                text += "💡 <i>1-Candle engulfing ko'proq zarar keltiryapti, 2-Candle nisbatan yaxshiroq ishlayapti.</i>\n"
-            elif total_2c_net < 0 and total_1c_net >= 0:
-                text += "💡 <i>2-Candle engulfing ko'proq zarar keltiryapti, 1-Candle nisbatan yaxshiroq ishlayapti.</i>\n"
-            elif total_1c_net < 0 and total_2c_net < 0:
-                text += "⚠️ <i>Ikkala engulfing turi ham zarar qilmoqda — strategiya parametrlarini qayta ko'rib chiqish tavsiya etiladi.</i>\n"
-
-            text += "\n<b>📂 Symbol bo'yicha holat:</b>\n"
+            text += "📂 Symbol bo'yicha:\n"
             for sym, e in ENGINES.items():
                 net = e.balance - e.initial
                 emoji = "🟢" if net >= 0 else "🔴"
-                pause_note = " ⏸(to'xtatilgan)" if e.trading_paused else ""
-                text += f"{emoji} {sym}: {net:+.2f}${pause_note}\n"
+                text += f"{emoji} {sym}: {net:+.2f}$\n"
 
             await tg.send(text)
-
         await asyncio.sleep(60)
 
 
@@ -592,48 +525,26 @@ async def daily_report():
     while True:
         now = datetime.now(timezone.utc)
         if now.hour == CONFIG['REPORT_HOUR'] and now.minute < 1:
-            log.info("📊 Kunlik hisobot yuborilmoqda...")
             total_bal  = sum(e.balance for e in ENGINES.values())
             total_init = sum(e.initial for e in ENGINES.values())
             total_w    = sum(e.wins for e in ENGINES.values())
             total_l    = sum(e.losses for e in ENGINES.values())
             total_be   = sum(e.bes for e in ENGINES.values())
-            total_comm = sum(e.total_comm for e in ENGINES.values())
             total_done = total_w + total_l + total_be
             wr  = total_w / total_done * 100 if total_done > 0 else 0
             pct = (total_bal - total_init) / total_init * 100 if total_init else 0
 
-            text = (f"📊 <b>KUNLIK HISOBOT</b>\n"
-                    f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n<b>📈 Symbols:</b>\n")
+            text = (f"📊 <b>KUNLIK HISOBOT (signal-only)</b>\n"
+                    f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n━━━━━━━━━━━━━━━━━━━━━━\n")
             for sym, e in ENGINES.items():
                 s  = e.wins + e.losses + e.bes
                 sw = e.wins / s * 100 if s > 0 else 0
                 sp = (e.balance - e.initial) / e.initial * 100
                 emoji = "🟢" if e.balance >= e.initial else "🔴"
-                text += (f"\n{emoji} <b>{sym}</b>\n"
-                         f"├ Balans: ${e.balance:.2f}\n"
-                         f"├ O'sish: {sp:+.2f}%\n"
-                         f"├ WR: {sw:.1f}%\n"
-                         f"├ ✅{e.wins} ❌{e.losses} ⚪{e.bes}\n"
-                         f"├ 📂 Ochiq: {len(e.positions)}\n"
-                         f"└ 🔻 Komissiya: -${e.total_comm:.2f}\n")
+                text += f"\n{emoji} {sym}: ${e.balance:.2f} ({sp:+.2f}%) WR:{sw:.1f}% ✅{e.wins}❌{e.losses}\n"
 
-            text += (f"\n━━━━━━━━━━━━━━━━━━━━━━\n<b>📊 JAMI:</b>\n"
-                     f"├ ✅ W: {total_w} | ❌ L: {total_l} | ⚪ BE: {total_be}\n"
-                     f"├ 🎯 Win Rate: <b>{wr:.1f}%</b>\n"
-                     f"├ 💵 Umumiy balans: <b>${total_bal:.2f}</b>\n"
-                     f"├ 🔻 Umumiy komissiya: <b>-${total_comm:.2f}</b>\n"
-                     f"└ 📈 Umumiy o'sish: <b>{pct:+.2f}%</b>")
+            text += (f"\n━━━━━━━━━━━━━━━━━━━━━━\nJAMI: WR {wr:.1f}% | Balans ${total_bal:.2f} ({pct:+.2f}%)")
             await tg.send(text)
-
-            for sym, e in ENGINES.items():
-                if e.candles:
-                    ch = make_chart(e.candles, e.trades, sym, CONFIG['INTERVAL'], "· kunlik")
-                    if ch:
-                        s  = e.wins + e.losses + e.bes
-                        sw = e.wins / s * 100 if s > 0 else 0
-                        await tg.photo(ch, f"📊 <b>{sym}</b> · WR: {sw:.1f}% · Balans: ${e.balance:.2f}")
             await asyncio.sleep(60)
         await asyncio.sleep(30)
 
@@ -642,34 +553,23 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.5 ishga tushdi")
-    log.info(f"Symbols: {CONFIG['SYMBOLS']}")
-    log.info(f"TF: {CONFIG['INTERVAL']} | TESTNET: {CONFIG['TESTNET']}")
-    log.info(f"Risk/trade: {CONFIG['RISK_PCT']*100:.1f}% | Max pozitsiya: {CONFIG['MAX_OPEN_POS']} | Komissiya: {CONFIG['COMM_RATE']*100:.2f}%")
-    log.info(f"Preload candles: {CONFIG['PRELOAD_CANDLES']}")
-    log.info(f"Socket timeout: {CONFIG['SOCKET_TIMEOUT_MIN']}min | Max daily loss: {CONFIG['MAX_DAILY_LOSS_PCT']*100:.0f}%")
+    log.info("🚀 Bot v5.6 ishga tushdi — SIGNAL-ONLY MODE")
+    log.info("⚠️ HECH QANDAY REAL ORDER YUBORILMAYDI — faqat real bozor narxidan signal aniqlanadi")
+    log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.5</b>\n"
+        f"🚀 <b>Engulfing Bot v5.6 — SIGNAL-ONLY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Symbols: <b>{', '.join(CONFIG['SYMBOLS'])}</b>\n"
+        f"⚠️ <b>Real order YO'Q — faqat signal kuzatuvi</b>\n"
+        f"📊 Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
-        f"🔒 TESTNET: {CONFIG['TESTNET']}\n"
-        f"⚖️ Risk/trade: {CONFIG['RISK_PCT']*100:.1f}%\n"
-        f"📂 Max pozitsiya (symbolga): {CONFIG['MAX_OPEN_POS']}\n"
-        f"💰 Komissiya: {CONFIG['COMM_RATE']*100:.2f}%\n"
-        f"📥 Preload: {CONFIG['PRELOAD_CANDLES']} candle\n"
-        f"🩺 Socket timeout ogohlantirish: {CONFIG['SOCKET_TIMEOUT_MIN']} min\n"
-        f"🛑 Max kunlik zarar: {CONFIG['MAX_DAILY_LOSS_PCT']*100:.0f}%\n"
-        f"💵 Balans: $1000 × {len(CONFIG['SYMBOLS'])}\n"
+        f"🌐 Ma'lumot manbai: <b>Real Binance bozori</b>\n"
+        f"⚖️ Virtual risk/trade: {CONFIG['RISK_PCT']*100:.1f}%\n"
         f"✅ Bot aktiv"
     )
 
-    client = await AsyncClient.create(
-        api_key=CONFIG['API_KEY'],
-        api_secret=CONFIG['API_SECRET'],
-        testnet=CONFIG['TESTNET']
-    )
+    # Diqqat: API key/secret shart emas — faqat public market data o'qiladi
+    client = await AsyncClient.create()
 
     tasks = [asyncio.create_task(worker(client, s)) for s in CONFIG['SYMBOLS']]
     tasks.append(asyncio.create_task(daily_report()))
