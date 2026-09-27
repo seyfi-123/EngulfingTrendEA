@@ -12,6 +12,11 @@
 # + A = 1% / TP 2R
 # + B = 1% / BE 2R / TRAILING
 #
+# ADDITIONS:
+# 1) 4 INDEPENDENT TIMEFRAMES
+# 2) TELEGRAM CLOSE CHART
+# 3) LIVE CANDLE HISTORY FILTER
+#
 # IMPORTANT:
 # Historical filter uses ONLY data before the current setup.
 # No future candles are used for deciding a live entry.
@@ -55,7 +60,26 @@ CONFIG = {
         if s.strip()
     ],
 
+    # ========================================================
+    # ADDITION 1:
+    # 4 independent timeframes
+    #
+    # Example:
+    # INTERVALS=1m,5m,15m,1h
+    #
+    # If INTERVALS is not provided, old INTERVAL is used.
+    # ========================================================
+
     "INTERVAL": os.getenv("INTERVAL", "1m"),
+
+    "INTERVALS": [
+        s.strip()
+        for s in os.getenv(
+            "INTERVALS",
+            os.getenv("INTERVAL", "1m,5m,15m,1h")
+        ).split(",")
+        if s.strip()
+    ],
 
     "BALANCE": float(os.getenv("BALANCE", "1000")),
     "RISK_PCT": float(os.getenv("RISK_PCT", "0.02")),
@@ -905,9 +929,15 @@ def evaluate_historical_trade(
 
 class HistoricalDB:
 
-    def __init__(self, symbol):
+    def __init__(self, symbol, interval):
 
         self.symbol = symbol
+
+        # ====================================================
+        # ADDITION 1:
+        # DB is independent for every symbol + timeframe.
+        # ====================================================
+        self.interval = interval
 
         self.rows = []
 
@@ -1156,7 +1186,8 @@ class HistoricalDB:
 
 async def download_6m_history(
     client,
-    symbol
+    symbol,
+    interval
 ):
 
     now_ms = int(
@@ -1183,7 +1214,7 @@ async def download_6m_history(
     cursor = start_ms
 
     log.info(
-        f"📚 {symbol}: "
+        f"📚 {symbol} [{interval}]: "
         f"{CONFIG['HISTORY_MONTHS']} oy history "
         f"yuklanmoqda..."
     )
@@ -1194,7 +1225,7 @@ async def download_6m_history(
 
             klines = await client.get_klines(
                 symbol=symbol,
-                interval=CONFIG["INTERVAL"],
+                interval=interval,
                 startTime=cursor,
                 endTime=end_ms,
                 limit=CONFIG["HISTORY_LIMIT"]
@@ -1203,7 +1234,8 @@ async def download_6m_history(
         except Exception as e:
 
             log.error(
-                f"{symbol}: history request xato: {e}"
+                f"{symbol} [{interval}]: "
+                f"history request xato: {e}"
             )
 
             await asyncio.sleep(2)
@@ -1234,7 +1266,7 @@ async def download_6m_history(
         if len(all_klines) % 10000 == 0:
 
             log.info(
-                f"📚 {symbol}: "
+                f"📚 {symbol} [{interval}]: "
                 f"{len(all_klines)} candle..."
             )
 
@@ -1268,7 +1300,7 @@ async def download_6m_history(
     )
 
     log.info(
-        f"📚 {symbol}: "
+        f"📚 {symbol} [{interval}]: "
         f"{len(candles)} ta history candle tayyor"
     )
 
@@ -1281,28 +1313,32 @@ async def download_6m_history(
 
 async def build_history_db(
     client,
-    symbol
+    symbol,
+    interval
 ):
 
     candles = await download_6m_history(
         client,
-        symbol
+        symbol,
+        interval
     )
 
     db = HistoricalDB(
-        symbol
+        symbol,
+        interval
     )
 
     if len(candles) < 1000:
 
         log.warning(
-            f"{symbol}: history juda kam"
+            f"{symbol} [{interval}]: "
+            f"history juda kam"
         )
 
         return db
 
     log.info(
-        f"🧠 {symbol}: "
+        f"🧠 {symbol} [{interval}]: "
         f"historical setup'lar hisoblanmoqda..."
     )
 
@@ -1355,7 +1391,7 @@ async def build_history_db(
         if total % 5000 == 0:
 
             log.info(
-                f"🧠 {symbol}: "
+                f"🧠 {symbol} [{interval}]: "
                 f"{total} setup..."
             )
 
@@ -1369,7 +1405,7 @@ async def build_history_db(
         db.loaded_to = candles[-1]["time"]
 
     log.info(
-        f"✅ {symbol}: "
+        f"✅ {symbol} [{interval}]: "
         f"{len(db.rows)} historical setup "
         f"tayyor"
     )
@@ -1526,6 +1562,10 @@ def make_chart(
             except Exception:
                 pass
 
+        # ----------------------------------------------------
+        # OPEN / ENTRY MARKERS
+        # ----------------------------------------------------
+
         for t in trades[-30:]:
 
             mark(
@@ -1534,6 +1574,26 @@ def make_chart(
                 t["type"],
                 f"{t.get('part','')}"
             )
+
+        # ----------------------------------------------------
+        # ADDITION 2:
+        # CLOSED TRADE EXIT MARKER
+        # ----------------------------------------------------
+
+        for t in trades[-30:]:
+
+            if (
+                t.get("exit") is not None
+                and
+                t.get("exit_time") is not None
+            ):
+
+                mark(
+                    t["exit_time"],
+                    t["exit"],
+                    t["type"],
+                    f"{t.get('part','')} EXIT"
+                )
 
         if open_positions:
 
@@ -1596,10 +1656,18 @@ class Engine:
     def __init__(
         self,
         symbol,
+        interval,
         history_db
     ):
 
         self.symbol = symbol
+
+        # ====================================================
+        # ADDITION 1:
+        # Every Engine is independent by symbol + timeframe.
+        # ====================================================
+
+        self.interval = interval
 
         self.db = history_db
 
@@ -1815,18 +1883,27 @@ class Engine:
 
     def reset_block_if_structure_changed(
         self,
-        signal
+        signal,
+        candles=None
     ):
 
-        # Current structure is checked.
-        # A strong opposite structure resets
-        # the previous direction block.
+        # ====================================================
+        # ADDITION 3:
+        # Structure can now be checked against
+        # the current LIVE candle.
+        # ====================================================
 
-        if len(self.candles) < 10:
+        source_candles = (
+            candles
+            if candles is not None
+            else self.candles
+        )
+
+        if len(source_candles) < 10:
             return
 
         sf = structure_features(
-            self.candles[-10:]
+            source_candles[-10:]
         )
 
         if (
@@ -2051,6 +2128,19 @@ class Engine:
 
             p["exitR"] = exit_r
 
+            # =================================================
+            # ADDITION 2:
+            # Remember exact candle time for close chart.
+            # =================================================
+
+            p["exit_time"] = int(
+                candle["time"]
+            )
+
+            p["exit_candle"] = dict(
+                candle
+            )
+
             if (
                 p["beSet"]
                 and
@@ -2144,6 +2234,19 @@ class Engine:
                     CONFIG["A_TP_R"]
                 )
 
+                # =================================================
+                # ADDITION 2:
+                # Remember exact candle time for close chart.
+                # =================================================
+
+                p["exit_time"] = int(
+                    candle["time"]
+                )
+
+                p["exit_candle"] = dict(
+                    candle
+                )
+
                 p["closeReason"] = (
                     "TP1_A_2R"
                 )
@@ -2195,6 +2298,19 @@ class Engine:
 
                 p["exitR"] = (
                     CONFIG["MAX_TRAIL_R"]
+                )
+
+                # =================================================
+                # ADDITION 2:
+                # Remember exact candle time for close chart.
+                # =================================================
+
+                p["exit_time"] = int(
+                    candle["time"]
+                )
+
+                p["exit_candle"] = dict(
+                    candle
                 )
 
                 p["closeReason"] = (
@@ -2354,6 +2470,7 @@ class Engine:
 
         log.info(
             f"{self.symbol} "
+            f"[{self.interval}] "
             f"[{p['part']}] "
             f"{p['exitR']:+.2f}R | "
             f"net ${net_pnl:+.2f} | "
@@ -2382,7 +2499,8 @@ class Engine:
             f"{emoji} "
             f"<b>YOPILDI "
             f"[{p['part']}] "
-            f"{self.symbol}</b>\n"
+            f"{self.symbol} "
+            f"[{self.interval}]</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🎯 R: "
             f"<b>{p['exitR']:+.2f}R</b>\n"
@@ -2400,6 +2518,54 @@ class Engine:
             f"{self.consecutive_losses[p['type']]}"
             f"{blocked}"
         )
+
+        # ====================================================
+        # ADDITION 2:
+        # Send CLOSE chart with EXIT marker.
+        #
+        # If the exit candle is still live and not yet inside
+        # self.candles, temporarily add it only for chart.
+        # ====================================================
+
+        chart_candles = list(
+            self.candles
+        )
+
+        exit_candle = p.get(
+            "exit_candle"
+        )
+
+        if exit_candle:
+
+            if (
+                not chart_candles
+                or
+                chart_candles[-1]["time"]
+                !=
+                exit_candle["time"]
+            ):
+
+                chart_candles.append(
+                    exit_candle
+                )
+
+        ch = make_chart(
+            chart_candles,
+            self.trades,
+            self.symbol,
+            self.interval,
+            f"· {p.get('part','')} EXIT",
+            self.positions
+        )
+
+        if ch:
+
+            await tg.photo(
+                ch,
+                f"{self.symbol} [{self.interval}] · "
+                f"{p.get('part','')} EXIT · "
+                f"{p.get('closeReason','SL')}"
+            )
 
         self.check_day_reset()
 
@@ -2426,7 +2592,8 @@ class Engine:
             self.trading_paused = True
 
             await tg.send(
-                f"🛑 <b>{self.symbol}: "
+                f"🛑 <b>{self.symbol} "
+                f"[{self.interval}]: "
                 f"KUNLIK LOSS LIMIT</b>\n"
                 f"📉 "
                 f"-{day_loss*100:.2f}%"
@@ -2442,8 +2609,47 @@ class Engine:
         candle
     ):
 
+        # ====================================================
+        # ADDITION 3:
+        #
+        # Build the exact live candle state first.
+        #
+        # self.candles contains CLOSED candles.
+        # The current websocket candle may not yet exist there.
+        #
+        # History filter must therefore use:
+        #
+        # OLD CLOSED CANDLES + CURRENT LIVE CANDLE
+        #
+        # This makes the historical feature calculation
+        # identical to the candle that generated the live signal.
+        # ====================================================
+
+        if (
+            self.candles
+            and
+            self.candles[-1]["time"]
+            ==
+            candle["time"]
+        ):
+
+            live_candles = (
+                self.candles[:-1]
+                +
+                [candle]
+            )
+
+        else:
+
+            live_candles = (
+                self.candles
+                +
+                [candle]
+            )
+
         self.reset_block_if_structure_changed(
-            signal
+            signal,
+            live_candles
         )
 
         if self.is_blocked(
@@ -2471,11 +2677,11 @@ class Engine:
             }
 
         idx = len(
-            self.candles
+            live_candles
         ) - 1
 
         features = make_features(
-            self.candles,
+            live_candles,
             idx,
             signal
         )
@@ -2526,7 +2732,7 @@ class Engine:
         ):
 
             log.info(
-                f"{self.symbol}: "
+                f"{self.symbol} [{self.interval}]: "
                 f"MAX OPEN reached"
             )
 
@@ -2661,7 +2867,8 @@ class Engine:
         await tg.send(
             f"{emoji} "
             f"<b>ENTRY {action} "
-            f"{self.symbol}</b>\n"
+            f"{self.symbol} "
+            f"[{self.interval}]</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"⚡ REALTIME PRICE\n"
             f"💵 Entry: "
@@ -2688,11 +2895,36 @@ class Engine:
             f"{CONFIG['MAX_OPEN_POS']}"
         )
 
+        # ====================================================
+        # ADDITION 3:
+        # Entry chart uses the actual live candle too.
+        # ====================================================
+
+        chart_candles = list(
+            self.candles
+        )
+
+        if (
+            not chart_candles
+            or
+            chart_candles[-1]["time"]
+            !=
+            candle["time"]
+        ):
+
+            chart_candles.append(
+                candle
+            )
+
+        else:
+
+            chart_candles[-1] = candle
+
         ch = make_chart(
-            self.candles,
+            chart_candles,
             self.trades,
             self.symbol,
-            CONFIG["INTERVAL"],
+            self.interval,
             f"· {action} REALTIME",
             self.positions
         )
@@ -2701,7 +2933,7 @@ class Engine:
 
             await tg.photo(
                 ch,
-                f"{self.symbol} · {action}"
+                f"{self.symbol} [{self.interval}] · {action}"
             )
 
         return True
@@ -2810,7 +3042,8 @@ class Engine:
             }
 
             log.info(
-                f"⏳ {self.symbol}: "
+                f"⏳ {self.symbol} "
+                f"[{self.interval}]: "
                 f"{signal['type']} "
                 f"triggered "
                 f"1/{CONFIG['CONFIRM_TICKS']}"
@@ -2882,7 +3115,12 @@ class Engine:
 
             self.pending_signal = None
 
-            # History filter
+            # =================================================
+            # ADDITION 3:
+            # History filter receives the same CURRENT
+            # open candle that generated the live signal.
+            # =================================================
+
             history_result = (
                 self.history_check(
                     signal,
@@ -2921,6 +3159,7 @@ class Engine:
 
                 log.info(
                     f"🛑 {self.symbol} "
+                    f"[{self.interval}] "
                     f"{signal['type']} "
                     f"BLOCK: {reason} | "
                     f"similar="
@@ -3052,6 +3291,7 @@ class Engine:
 
                 log.error(
                     f"{self.symbol} "
+                    f"[{self.interval}] "
                     f"position manage: {e}"
                 )
 
@@ -3069,7 +3309,7 @@ async def preload_current(
 
         klines = await client.get_klines(
             symbol=engine.symbol,
-            interval=CONFIG["INTERVAL"],
+            interval=engine.interval,
             limit=CONFIG["PRELOAD_CANDLES"]
         )
 
@@ -3092,7 +3332,8 @@ async def preload_current(
         engine.candles = candles
 
         log.info(
-            f"📥 {engine.symbol}: "
+            f"📥 {engine.symbol} "
+            f"[{engine.interval}]: "
             f"{len(candles)} current candles"
         )
 
@@ -3100,6 +3341,7 @@ async def preload_current(
 
         log.error(
             f"{engine.symbol} "
+            f"[{engine.interval}] "
             f"preload: {e}"
         )
 
@@ -3119,24 +3361,36 @@ HISTORY_DBS = {}
 
 async def worker(
     client,
-    symbol
+    symbol,
+    interval
 ):
 
+    # ========================================================
+    # ADDITION 1:
+    # Unique DB/Engine key = SYMBOL + TIMEFRAME
+    # ========================================================
+
+    key = (
+        symbol,
+        interval
+    )
+
     db = HISTORY_DBS[
-        symbol
+        key
     ]
 
     engine = Engine(
         symbol,
+        interval,
         db
     )
 
     ENGINES[
-        symbol
+        key
     ] = engine
 
     log.info(
-        f"🔵 {symbol} worker start"
+        f"🔵 {symbol} [{interval}] worker start"
     )
 
     await preload_current(
@@ -3155,14 +3409,15 @@ async def worker(
             socket = (
                 bsm.kline_socket(
                     symbol=symbol,
-                    interval=CONFIG["INTERVAL"]
+                    interval=interval
                 )
             )
 
             async with socket as stream:
 
                 log.info(
-                    f"🟢 {symbol} socket connected"
+                    f"🟢 {symbol} "
+                    f"[{interval}] socket connected"
                 )
 
                 while True:
@@ -3235,7 +3490,8 @@ async def worker(
         except Exception as e:
 
             log.error(
-                f"{symbol} socket error: "
+                f"{symbol} [{interval}] "
+                f"socket error: "
                 f"{e} — reconnect 5s"
             )
 
@@ -3260,7 +3516,9 @@ async def health_check():
 
         now = time.time()
 
-        for sym, engine in ENGINES.items():
+        for key, engine in ENGINES.items():
+
+            symbol, interval = key
 
             if (
                 engine.last_candle_time
@@ -3282,23 +3540,29 @@ async def health_check():
                 60
             )
 
+            warn_key = (
+                symbol,
+                interval
+            )
+
             if (
                 silent >= limit
                 and
-                not warned.get(sym)
+                not warned.get(warn_key)
             ):
 
-                warned[sym] = True
+                warned[warn_key] = True
 
                 await tg.send(
-                    f"⚠️ <b>{sym} "
+                    f"⚠️ <b>{symbol} "
+                    f"[{interval}] "
                     f"SOCKET JIM</b>\n"
                     f"{int(silent//60)} min"
                 )
 
             elif silent < limit:
 
-                warned[sym] = False
+                warned[warn_key] = False
 
 
 # ============================================================
@@ -3412,12 +3676,15 @@ async def daily_diagnostics():
                     f"{insufficient}\n\n"
                 )
 
-                for symbol, e in ENGINES.items():
+                for key, e in ENGINES.items():
+
+                    symbol, interval = key
 
                     db = e.db
 
                     txt += (
-                        f"<b>{symbol}</b>\n"
+                        f"<b>{symbol} "
+                        f"[{interval}]</b>\n"
                         f"Balance: "
                         f"${e.balance:.2f}\n"
                         f"Trades: "
@@ -3534,7 +3801,9 @@ async def daily_report():
                     f"<b>{wr:.1f}%</b>\n\n"
                 )
 
-                for symbol, e in ENGINES.items():
+                for key, e in ENGINES.items():
+
+                    symbol, interval = key
 
                     trades = (
                         e.wins +
@@ -3550,7 +3819,7 @@ async def daily_report():
                     )
 
                     txt += (
-                        f"{symbol}: "
+                        f"{symbol} [{interval}]: "
                         f"${e.balance:.2f} | "
                         f"WR {swr:.1f}% | "
                         f"W{e.wins}/"
@@ -3596,9 +3865,14 @@ async def main():
         f"{CONFIG['SYMBOLS']}"
     )
 
+    # ========================================================
+    # ADDITION 1:
+    # Show all independent timeframes.
+    # ========================================================
+
     log.info(
-        f"TF: "
-        f"{CONFIG['INTERVAL']}"
+        f"TFs: "
+        f"{CONFIG['INTERVALS']}"
     )
 
     log.info(
@@ -3652,6 +3926,8 @@ async def main():
             f"━━━━━━━━━━━━━━━━━━\n"
             f"⚡ Realtime entry: "
             f"<b>{CONFIG['REALTIME_ENTRY']}</b>\n"
+            f"⏱ Timeframes: "
+            f"<b>{', '.join(CONFIG['INTERVALS'])}</b>\n"
             f"📚 Historical: "
             f"<b>{CONFIG['HISTORY_MONTHS']} oy</b>\n"
             f"🔎 Similar minimum: "
@@ -3674,38 +3950,52 @@ async def main():
 
         for symbol in CONFIG["SYMBOLS"]:
 
-            try:
+            for interval in CONFIG["INTERVALS"]:
 
-                db = await build_history_db(
-                    client,
-                    symbol
-                )
+                try:
 
-                HISTORY_DBS[
-                    symbol
-                ] = db
+                    db = await build_history_db(
+                        client,
+                        symbol,
+                        interval
+                    )
 
-                await tg.send(
-                    f"📚 <b>{symbol}</b>\n"
-                    f"6M history tayyor\n"
-                    f"Setup: "
-                    f"<b>{len(db.rows)}</b>\n"
-                    f"Time buckets: "
-                    f"<b>{len(db.time_stats)}</b>"
-                )
+                    key = (
+                        symbol,
+                        interval
+                    )
 
-            except Exception as e:
+                    HISTORY_DBS[
+                        key
+                    ] = db
 
-                log.error(
-                    f"{symbol} history build: "
-                    f"{e}"
-                )
+                    await tg.send(
+                        f"📚 <b>{symbol} "
+                        f"[{interval}]</b>\n"
+                        f"6M history tayyor\n"
+                        f"Setup: "
+                        f"<b>{len(db.rows)}</b>\n"
+                        f"Time buckets: "
+                        f"<b>{len(db.time_stats)}</b>"
+                    )
 
-                HISTORY_DBS[
-                    symbol
-                ] = HistoricalDB(
-                    symbol
-                )
+                except Exception as e:
+
+                    log.error(
+                        f"{symbol} [{interval}] "
+                        f"history build: "
+                        f"{e}"
+                    )
+
+                    HISTORY_DBS[
+                        (
+                            symbol,
+                            interval
+                        )
+                    ] = HistoricalDB(
+                        symbol,
+                        interval
+                    )
 
         # ----------------------------------------------------
         # WORKERS
@@ -3717,17 +4007,27 @@ async def main():
             "SYMBOLS"
         ]:
 
-            if symbol not in HISTORY_DBS:
-                continue
+            for interval in CONFIG[
+                "INTERVALS"
+            ]:
 
-            tasks.append(
-                asyncio.create_task(
-                    worker(
-                        client,
-                        symbol
+                key = (
+                    symbol,
+                    interval
+                )
+
+                if key not in HISTORY_DBS:
+                    continue
+
+                tasks.append(
+                    asyncio.create_task(
+                        worker(
+                            client,
+                            symbol,
+                            interval
+                        )
                     )
                 )
-            )
 
         tasks.append(
             asyncio.create_task(
