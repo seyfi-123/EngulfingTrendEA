@@ -1,5 +1,5 @@
 # ============================================================
-# EngulfingTrend Bot v5.9.3 — DUAL ENTRY + BODY ENGULFING + CONFIRMATION
+# EngulfingTrend Bot v5.9.4 — DUAL ENTRY + MIXED BODY ENGULFING + DOUBLE CONFIRMATION
 # A: 1:1 da 100% yopiladi | B: har 2R trailing (4R->SL2, 6R->SL4, 8R->SL6, 10R->SL8), max 10R cap
 # ============================================================
 import os
@@ -197,29 +197,34 @@ class Engine:
 
     # ----------------------------------------------------------
     def checkEngulfing(self, cd, idx):
-        """2-candle engulfing — FAQAT BODY (open/close), fitil (high/low) hisobga olinmaydi."""
+        """
+        2-candle engulfing — ARALASH mezon:
+        - Asosiy shart: BODY (open/close) bilan — joriy candle'ning OPEN'i
+          oldingi 2 ta candle'ning CLOSE'larini yorib o'tishi kifoya.
+        - Fitil (high/low) shartga umuman kiritilmaydi, faqat CLOSE
+          chegaralari solishtiriladi.
+        """
         if idx < 2: return None
         cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
 
-        p1_top = max(p1['open'], p1['close']); p1_bot = min(p1['open'], p1['close'])
-        p2_top = max(p2['open'], p2['close']); p2_bot = min(p2['open'], p2['close'])
-        body_top_2 = max(p1_top, p2_top)
-        body_bot_2 = min(p1_bot, p2_bot)
+        close_top_2 = max(p1['close'], p2['close'])
+        close_bot_2 = min(p1['close'], p2['close'])
 
         bull2 = (
             cur['close'] > cur['open']
             and p1['close'] < p1['open']
             and p2['close'] < p2['open']
-            and cur['open']  < body_bot_2
-            and cur['close'] > body_top_2
+            and cur['open']  < close_bot_2     # OPEN oldingi 2 ta CLOSE'dan pastda boshlanadi
+            and cur['close'] > close_top_2     # CLOSE oldingi 2 ta CLOSE'dan yuqorida yopiladi
         )
         bear2 = (
             cur['close'] < cur['open']
             and p1['close'] > p1['open']
             and p2['close'] > p2['open']
-            and cur['open']  > body_top_2
-            and cur['close'] < body_bot_2
+            and cur['open']  > close_top_2
+            and cur['close'] < close_bot_2
         )
+
         if bull2: return {'type': 'B', 'candles': 2}
         if bear2: return {'type': 'S', 'candles': 2}
         return None
@@ -474,7 +479,7 @@ class Engine:
             await tg.send(f"🛑 <b>{self.symbol}: KUNLIK ZARAR LIMITI</b>\n📉 -{day_loss*100:.1f}%")
 
     # ============================================================
-    # REALTIME + CONFIRMATION mantiqi
+    # REALTIME + CONFIRMATION mantiqi — ikki bosqichli tasdiqlash
     # ============================================================
     async def handleRealtimeCandle(self, client, candle):
         if len(self.candles) < 2:
@@ -489,8 +494,9 @@ class Engine:
                     'signal': sig,
                     'started_at': time.time(),
                     'last_candle': candle,
+                    'confirm_count': 1,   # birinchi marta ko'rildi
                 }
-                log.info(f"⏳ {self.symbol}: {sig['type']} signal kutishga qo'yildi (tasdiqlash {CONFIG['CONFIRM_SECONDS']}s)")
+                log.info(f"⏳ {self.symbol}: {sig['type']} signal kutishga qo'yildi (1/2 tasdiq, {CONFIG['CONFIRM_SECONDS']}s)")
             return
 
         pending = self.pending_signal
@@ -502,10 +508,13 @@ class Engine:
             self.pending_signal = None
             return
 
+        # Signal hali ham bir xil turda — tasdiq sonini oshiramiz
+        pending['confirm_count'] += 1
         pending['last_candle'] = candle
 
-        if elapsed >= CONFIG['CONFIRM_SECONDS']:
-            log.info(f"✅ {self.symbol}: {sig['type']} signal tasdiqlandi ({elapsed:.1f}s) — savdo ochilmoqda")
+        # Ikki shart bilan tasdiqlanadi: (1) yetarlicha vaqt o'tgan, (2) kamida 2 marta ko'rilgan
+        if elapsed >= CONFIG['CONFIRM_SECONDS'] and pending['confirm_count'] >= 2:
+            log.info(f"✅ {self.symbol}: {sig['type']} signal tasdiqlandi ({elapsed:.1f}s, {pending['confirm_count']} marta) — savdo ochilmoqda")
             self.rt_confirmed += 1
             self.pending_signal = None
             await self.openSignal(sig, candle, is_realtime=True)
@@ -659,7 +668,7 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.9.3 — DUAL ENTRY + BODY ENGULFING + CONFIRMATION")
+    log.info("🚀 Bot v5.9.4 — DUAL ENTRY + MIXED BODY ENGULFING + DOUBLE CONFIRMATION")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
     log.info(f"REALTIME={CONFIG['REALTIME_ENTRY']} | DUAL={CONFIG['DUAL_ENTRY']} | CONFIRM={CONFIG['CONFIRM_SECONDS']}s")
 
@@ -667,13 +676,13 @@ async def main():
     dual_status = "Yoqilgan" if CONFIG['DUAL_ENTRY'] else "Ochirilgan"
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.9.3 — DUAL ENTRY</b>\n"
+        f"🚀 <b>Engulfing Bot v5.9.4 — DUAL ENTRY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ <b>REALTIME</b>: {rt_status} ({CONFIG['CONFIRM_SECONDS']}s tasdiqlash)\n"
+        f"⚡ <b>REALTIME</b>: {rt_status} ({CONFIG['CONFIRM_SECONDS']}s + 2x tasdiqlash)\n"
         f"🎯 <b>DUAL ENTRY</b>: {dual_status}\n"
         f"📊 {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
-        f"🎯 2C Engulfing — FAQAT BODY (open/close)\n"
+        f"🎯 2C Engulfing — ARALASH (OPEN vs oldingi CLOSE'lar)\n"
         f"🎯 <b>Har signal 2 pozitsiya:</b>\n"
         f"   ├─ A: TP1 @ 1:1 (100%)\n"
         f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
