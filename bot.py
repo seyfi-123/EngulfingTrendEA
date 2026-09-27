@@ -1,6 +1,8 @@
 # ============================================================
-# EngulfingTrend Bot v5.9.4 — DUAL ENTRY + MIXED BODY ENGULFING + DOUBLE CONFIRMATION
-# A: 1:1 da 100% yopiladi | B: har 2R trailing (4R->SL2, 6R->SL4, 8R->SL6, 10R->SL8), max 10R cap
+# EngulfingTrend Bot v6.1.0 — FULL MULTI-PATTERN
+# Engulfing + Pinbar + Breakout + 3-Bar Continuation + Shrinking Candles
+# + 3-Bar Reversal + Liquidity Sweep
+# Har pattern alohida yoqilib/o'chiriladi, hammasi parallel, umumiy balans bitta
 # ============================================================
 import os
 import asyncio
@@ -38,13 +40,27 @@ CONFIG = {
     'REALTIME_ENTRY': os.getenv('REALTIME_ENTRY', 'True') == 'True',
     'CONFIRM_SECONDS': float(os.getenv('CONFIRM_SECONDS', '2.5')),
 
+    # === Pattern'larni yoqish/o'chirish ===
+    'ENGULFING': os.getenv('ENGULFING', 'True') == 'True',
+    'PINBAR':    os.getenv('PINBAR', 'True') == 'True',
+    'BREAKOUT':  os.getenv('BREAKOUT', 'True') == 'True',
+    'CONT3BAR':  os.getenv('CONT3BAR', 'True') == 'True',
+    'SHRINKING': os.getenv('SHRINKING', 'True') == 'True',
+    'REV3BAR':   os.getenv('REV3BAR', 'True') == 'True',
+    'LIQSWEEP':  os.getenv('LIQSWEEP', 'True') == 'True',
+
+    # === Pattern sozlamalari ===
+    'PINBAR_WICK_RATIO': float(os.getenv('PINBAR_WICK_RATIO', '2.0')),
+    'BREAKOUT_LOOKBACK': int(os.getenv('BREAKOUT_LOOKBACK', '3')),
+    'LIQSWEEP_LOOKBACK': int(os.getenv('LIQSWEEP_LOOKBACK', '10')),  # previous high/low qidirish uchun orqaga necha candle
+
     # === Pozitsiya A ===
     'BE_AT_R':    float(os.getenv('BE_AT_R', '1.0')),
-    'TP1_AT_R':   float(os.getenv('TP1_AT_R', '1.0')),      # A: 1:1 da 100% yopiladi
+    'TP1_AT_R':   float(os.getenv('TP1_AT_R', '1.0')),
 
     # === Pozitsiya B ===
-    'TRAIL_STEP': float(os.getenv('TRAIL_STEP', '2.0')),    # har 2R qadamda: 4->SL2, 6->SL4, 8->SL6, 10->SL8
-    'MAX_TRAIL_R': float(os.getenv('MAX_TRAIL_R', '10.0')), # 10R ga yetganda pozitsiya yopiladi (xavfsizlik)
+    'TRAIL_STEP': float(os.getenv('TRAIL_STEP', '2.0')),
+    'MAX_TRAIL_R': float(os.getenv('MAX_TRAIL_R', '10.0')),
 
     'COMM_RATE':  float(os.getenv('COMM_RATE', '0.0005')),
 
@@ -134,10 +150,10 @@ def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None
             except: pass
 
         for t in trades[-30:]:
-            mark_point(t['time'], t['entry'], t['type'], f"{t.get('engulfCandles','')}C-{t.get('part','')}")
+            mark_point(t['time'], t['entry'], t['type'], f"{t.get('pattern','')}-{t.get('part','')}")
         if open_positions:
             for p in open_positions:
-                mark_point(p['time'], p['entry'], p['type'], f"{p.get('engulfCandles','')}C-{p.get('part','')} (ochiq)")
+                mark_point(p['time'], p['entry'], p['type'], f"{p.get('pattern','')}-{p.get('part','')} (ochiq)")
 
         ax.set_title(f'{symbol} · {interval} {suffix}', color='#e2e8f0', fontsize=14, pad=15)
         ax.tick_params(colors='#94a3b8', labelsize=9)
@@ -151,6 +167,233 @@ def make_chart(candles, trades, symbol, interval, suffix="", open_positions=None
         return buf
     except Exception as e:
         log.error(f"chart: {e}"); return None
+
+
+# ============================================================
+# PATTERN DETECTORS — har biri mustaqil funksiya
+# ============================================================
+def detect_engulfing(cd, idx):
+    """2-candle engulfing — ARALASH mezon (OPEN vs oldingi CLOSE'lar)"""
+    if idx < 2: return None
+    cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
+
+    close_top_2 = max(p1['close'], p2['close'])
+    close_bot_2 = min(p1['close'], p2['close'])
+
+    bull2 = (
+        cur['close'] > cur['open']
+        and p1['close'] < p1['open']
+        and p2['close'] < p2['open']
+        and cur['open']  < close_bot_2
+        and cur['close'] > close_top_2
+    )
+    bear2 = (
+        cur['close'] < cur['open']
+        and p1['close'] > p1['open']
+        and p2['close'] > p2['open']
+        and cur['open']  > close_top_2
+        and cur['close'] < close_bot_2
+    )
+    if bull2: return {'type': 'B', 'pattern': 'ENG'}
+    if bear2: return {'type': 'S', 'pattern': 'ENG'}
+    return None
+
+
+def detect_pinbar(cd, idx):
+    """Pinbar — uzun fitil, kichik body, fitil qarama-qarshi tomonda"""
+    if idx < 1: return None
+    cur = cd[idx]
+    body = abs(cur['close'] - cur['open'])
+    if body <= 0: body = 1e-9
+
+    upper_wick = cur['high'] - max(cur['open'], cur['close'])
+    lower_wick = min(cur['open'], cur['close']) - cur['low']
+    ratio = CONFIG['PINBAR_WICK_RATIO']
+
+    if lower_wick >= body * ratio and lower_wick > upper_wick * 1.5:
+        return {'type': 'B', 'pattern': 'PIN'}
+    if upper_wick >= body * ratio and upper_wick > lower_wick * 1.5:
+        return {'type': 'S', 'pattern': 'PIN'}
+    return None
+
+
+def detect_breakout(cd, idx):
+    """Breakout — bir nechta 'siqilgan' candle'dan keyin kuchli candle chiqishi"""
+    n = CONFIG['BREAKOUT_LOOKBACK']
+    if idx < n: return None
+    cur = cd[idx]
+    prev = cd[idx-n:idx]
+
+    bodies = [abs(c['close'] - c['open']) for c in prev]
+    avg_prev_body = sum(bodies) / len(bodies) if bodies else 0
+    cur_body = abs(cur['close'] - cur['open'])
+
+    if avg_prev_body <= 0: return None
+    if cur_body < avg_prev_body * 2.0: return None
+
+    prev_high = max(c['high'] for c in prev)
+    prev_low = min(c['low'] for c in prev)
+
+    if cur['close'] > cur['open'] and cur['close'] > prev_high:
+        return {'type': 'B', 'pattern': 'BRK'}
+    if cur['close'] < cur['open'] and cur['close'] < prev_low:
+        return {'type': 'S', 'pattern': 'BRK'}
+    return None
+
+
+def detect_cont3bar(cd, idx):
+    """3-Bar Continuation — kichik pauza candle, keyin trend davom etishi"""
+    if idx < 2: return None
+    cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
+
+    body_p1 = abs(p1['close'] - p1['open'])
+    body_p2 = abs(p2['close'] - p2['open'])
+    if body_p2 <= 0: return None
+
+    is_pause = body_p1 < body_p2 * 0.6
+
+    bull = (p2['close'] > p2['open'] and is_pause
+            and cur['close'] > cur['open']
+            and cur['close'] > p2['close'])
+    bear = (p2['close'] < p2['open'] and is_pause
+            and cur['close'] < cur['open']
+            and cur['close'] < p2['close'])
+
+    if bull: return {'type': 'B', 'pattern': 'C3B'}
+    if bear: return {'type': 'S', 'pattern': 'C3B'}
+    return None
+
+
+def detect_shrinking(cd, idx):
+    """Shrinking Candles — har candle body'si kichraya boradi, keyin qarama-qarshi tomonga kuchli chiqish"""
+    if idx < 3: return None
+    cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]; p3 = cd[idx-3]
+
+    b1 = abs(p1['close'] - p1['open'])
+    b2 = abs(p2['close'] - p2['open'])
+    b3 = abs(p3['close'] - p3['open'])
+
+    # p3 -> p2 -> p1 ketma-ket kichraya borishi kerak (shrinking)
+    is_shrinking = b3 > b2 > b1 and b1 > 0
+
+    cur_body = abs(cur['close'] - cur['open'])
+    if not is_shrinking or cur_body <= 0: return None
+
+    # Joriy candle oldingi (eng kichik) candle'dan sezilarli katta bo'lishi kerak
+    if cur_body < b1 * 1.8: return None
+
+    if cur['close'] > cur['open']:
+        return {'type': 'B', 'pattern': 'SHR'}
+    if cur['close'] < cur['open']:
+        return {'type': 'S', 'pattern': 'SHR'}
+    return None
+
+
+def detect_rev3bar(cd, idx):
+    """3-Bar Reversal — trend, keyin qarama-qarshi kuchli candle, tasdiqlovchi candle"""
+    if idx < 2: return None
+    cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
+
+    body_p2 = abs(p2['close'] - p2['open'])
+    body_p1 = abs(p1['close'] - p1['open'])
+    body_cur = abs(cur['close'] - cur['open'])
+    if body_p2 <= 0: return None
+
+    # Bullish reversal: p2 qizil (trend down), p1 kuchli ko'k (reversal), cur ham ko'k (tasdiq)
+    bull = (p2['close'] < p2['open']
+            and p1['close'] > p1['open'] and body_p1 >= body_p2 * 0.8
+            and cur['close'] > cur['open']
+            and cur['close'] > p1['close'])
+
+    bear = (p2['close'] > p2['open']
+            and p1['close'] < p1['open'] and body_p1 >= body_p2 * 0.8
+            and cur['close'] < cur['open']
+            and cur['close'] < p1['close'])
+
+    if bull: return {'type': 'B', 'pattern': 'R3B'}
+    if bear: return {'type': 'S', 'pattern': 'R3B'}
+    return None
+
+
+def detect_liqsweep(cd, idx):
+    """
+    Liquidity Sweep + Engulfing:
+    1-candle: previous high/low'ni FITIL bilan "sweep" qiladi (teshib o'tadi), lekin CLOSE qaytadi (tuzoq)
+    2-candle: kuchli engulfing candle, sweep candle'ni tanasi bilan yutadi
+    """
+    n = CONFIG['LIQSWEEP_LOOKBACK']
+    if idx < n + 1: return None
+
+    sweep = cd[idx-1]   # 1-sham: sweep (tuzoq)
+    impulse = cd[idx]   # 2-sham: yutuvchi impuls
+    lookback = cd[idx-1-n: idx-1]   # sweep'dan oldingi davr — previous high/low shu yerdan olinadi
+    if not lookback: return None
+
+    prev_high = max(c['high'] for c in lookback)
+    prev_low  = min(c['low'] for c in lookback)
+
+    # Bearish sweep: sweep candle prev_high'ni fitil bilan teshadi, lekin close pastda qoladi
+    bearish_sweep = (sweep['high'] > prev_high and sweep['close'] < prev_high)
+    # Impulse candle: qizil, kuchli tana, sweep candle'ning tanasini yutadi
+    bearish_impulse = (impulse['close'] < impulse['open']
+                        and impulse['open'] > max(sweep['open'], sweep['close'])
+                        and impulse['close'] < min(sweep['open'], sweep['close']))
+
+    if bearish_sweep and bearish_impulse:
+        return {'type': 'S', 'pattern': 'LIQ'}
+
+    # Bullish sweep: sweep candle prev_low'ni fitil bilan teshadi, lekin close yuqorida qoladi
+    bullish_sweep = (sweep['low'] < prev_low and sweep['close'] > prev_low)
+    bullish_impulse = (impulse['close'] > impulse['open']
+                        and impulse['open'] < min(sweep['open'], sweep['close'])
+                        and impulse['close'] > max(sweep['open'], sweep['close']))
+
+    if bullish_sweep and bullish_impulse:
+        return {'type': 'B', 'pattern': 'LIQ'}
+
+    return None
+
+
+def check_all_patterns(cd, idx):
+    """Barcha yoqilgan pattern'larni tekshiradi, har biri mustaqil signal beradi."""
+    signals = []
+
+    if CONFIG['ENGULFING']:
+        s = detect_engulfing(cd, idx)
+        if s: signals.append(s)
+
+    if CONFIG['PINBAR']:
+        s = detect_pinbar(cd, idx)
+        if s: signals.append(s)
+
+    if CONFIG['BREAKOUT']:
+        s = detect_breakout(cd, idx)
+        if s: signals.append(s)
+
+    if CONFIG['CONT3BAR']:
+        s = detect_cont3bar(cd, idx)
+        if s: signals.append(s)
+
+    if CONFIG['SHRINKING']:
+        s = detect_shrinking(cd, idx)
+        if s: signals.append(s)
+
+    if CONFIG['REV3BAR']:
+        s = detect_rev3bar(cd, idx)
+        if s: signals.append(s)
+
+    if CONFIG['LIQSWEEP']:
+        s = detect_liqsweep(cd, idx)
+        if s: signals.append(s)
+
+    return signals
+
+
+PATTERN_NAMES = {
+    'ENG': 'Engulfing', 'PIN': 'Pinbar', 'BRK': 'Breakout',
+    'C3B': '3-Bar Continuation', 'SHR': 'Shrinking Candles',
+    'R3B': '3-Bar Reversal', 'LIQ': 'Liquidity Sweep',
+}
 
 
 # ============================================================
@@ -174,13 +417,13 @@ class Engine:
         self.gross_pnl = 0.0
 
         self.last_candle_time = None
-        self.stats_2c = {'wins': 0, 'losses': 0, 'net': 0.0}
+        self.stats_by_pattern = {}
         self.day_start_balance = CONFIG['BALANCE']
         self.day_key = None
         self.trading_paused = False
-        self.last_signal_time = None
+        self.last_signal_time = {}
 
-        self.pending_signal = None
+        self.pending_signals = {}
 
     # ----------------------------------------------------------
     def calcLot(self, slDist, price):
@@ -194,40 +437,6 @@ class Engine:
         max_lot = (self.balance * 0.95) / price
         lot = min(lot, max_lot)
         return round(lot, 4)
-
-    # ----------------------------------------------------------
-    def checkEngulfing(self, cd, idx):
-        """
-        2-candle engulfing — ARALASH mezon:
-        - Asosiy shart: BODY (open/close) bilan — joriy candle'ning OPEN'i
-          oldingi 2 ta candle'ning CLOSE'larini yorib o'tishi kifoya.
-        - Fitil (high/low) shartga umuman kiritilmaydi, faqat CLOSE
-          chegaralari solishtiriladi.
-        """
-        if idx < 2: return None
-        cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
-
-        close_top_2 = max(p1['close'], p2['close'])
-        close_bot_2 = min(p1['close'], p2['close'])
-
-        bull2 = (
-            cur['close'] > cur['open']
-            and p1['close'] < p1['open']
-            and p2['close'] < p2['open']
-            and cur['open']  < close_bot_2     # OPEN oldingi 2 ta CLOSE'dan pastda boshlanadi
-            and cur['close'] > close_top_2     # CLOSE oldingi 2 ta CLOSE'dan yuqorida yopiladi
-        )
-        bear2 = (
-            cur['close'] < cur['open']
-            and p1['close'] > p1['open']
-            and p2['close'] > p2['open']
-            and cur['open']  > close_top_2
-            and cur['close'] < close_bot_2
-        )
-
-        if bull2: return {'type': 'B', 'candles': 2}
-        if bear2: return {'type': 'S', 'candles': 2}
-        return None
 
     # ----------------------------------------------------------
     def openLocal(self, signal, candle, part='A'):
@@ -249,7 +458,7 @@ class Engine:
         return {
             'time': cur['time'],
             'type': signal['type'],
-            'engulfCandles': signal['candles'],
+            'pattern': signal['pattern'],
             'entry': cur['close'],
             'sl': slPrice,
             'initialSL': slPrice,
@@ -268,7 +477,6 @@ class Engine:
 
     # ----------------------------------------------------------
     def manageLocal(self, p, candle):
-        """Har bir pozitsiyani (A yoki B) alohida boshqaradi."""
         sl_hit = False; exit_price = 0; exitR = 0
         if p['type'] == 'B' and candle['low'] <= p['sl']:
             sl_hit = True; exit_price = p['sl']
@@ -294,19 +502,16 @@ class Engine:
         else:
             maxR = (p['entry'] - candle['low']) / p['slDist']
 
-        # BE @ 1:1 — ikkala pozitsiya uchun ham
         if maxR >= CONFIG['BE_AT_R'] and not p['beSet']:
             p['sl'] = p['entry']
             p['beSet'] = True
 
-        # ============ POZITSIYA A — 1:1 da 100% yopiladi ============
         if p.get('part') == 'A':
             if maxR >= CONFIG['TP1_AT_R'] and not p.get('tp1Done'):
                 if p['type'] == 'B':
                     exit_a = p['entry'] + CONFIG['TP1_AT_R'] * p['slDist']
                 else:
                     exit_a = p['entry'] - CONFIG['TP1_AT_R'] * p['slDist']
-
                 p['exit'] = exit_a
                 p['exitR'] = CONFIG['TP1_AT_R']
                 p['closeReason'] = 'TP1_A (1:1)'
@@ -316,9 +521,7 @@ class Engine:
                 return True
             return False
 
-        # ============ POZITSIYA B — har 2R trailing: 4->SL2, 6->SL4, 8->SL6, 10->SL8 ============
         if p.get('part') == 'B':
-            # 10R ga yetsa — pozitsiya avtomatik yopiladi (xavfsizlik "tomi")
             if maxR >= CONFIG['MAX_TRAIL_R']:
                 if p['type'] == 'B':
                     exit_b = p['entry'] + CONFIG['MAX_TRAIL_R'] * p['slDist']
@@ -331,7 +534,6 @@ class Engine:
                 self.trail_caps += 1
                 return True
 
-            # Har TRAIL_STEP (2R) qadamda: maxR=4->lockR=2, maxR=6->lockR=4, maxR=8->lockR=6, maxR=10->lockR=8
             if maxR >= CONFIG['BE_AT_R']:
                 steps = int(maxR / CONFIG['TRAIL_STEP'])
                 lockR = (steps - 1) * CONFIG['TRAIL_STEP']
@@ -362,7 +564,6 @@ class Engine:
 
     # ----------------------------------------------------------
     async def openSignal(self, signal, candle, is_realtime=False):
-        """Har signal → 2 ta pozitsiya (A + B), agar DUAL_ENTRY yoqilgan bo'lsa."""
         self.checkDayReset()
 
         if self.trading_paused:
@@ -373,10 +574,10 @@ class Engine:
             log.info(f"{self.symbol}: joy yo'q ({len(self.positions)}/{CONFIG['MAX_OPEN_POS']})")
             return
 
-        if self.last_signal_time == candle['time']:
+        pattern = signal['pattern']
+        if self.last_signal_time.get(pattern) == candle['time']:
             return
 
-        # ============ POZITSIYA A ============
         p_a = self.openLocal(signal, candle, part='A')
         if not p_a: return
         p_a['is_realtime'] = is_realtime
@@ -386,11 +587,10 @@ class Engine:
         self.total_comm += open_comm_a
 
         self.positions.append(p_a)
-        self.last_signal_time = candle['time']
+        self.last_signal_time[pattern] = candle['time']
         if is_realtime:
             self.rt_entries += 1
 
-        # ============ POZITSIYA B ============
         if CONFIG['DUAL_ENTRY']:
             p_b = self.openLocal(signal, candle, part='B')
             if p_b:
@@ -400,30 +600,32 @@ class Engine:
                 self.total_comm += open_comm_b
                 self.positions.append(p_b)
 
-        mode = "⚡ RT (tasdiqlangan)" if is_realtime else "📊 Sham yopilgan"
-        log.info(f"{mode} SIGNAL {self.symbol} {signal['type']} | A=1:1, B=trail(2R qadam/10R cap) | ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}")
+        mode = "⚡ RT" if is_realtime else "📊"
+        log.info(f"{mode} SIGNAL [{pattern}] {self.symbol} {signal['type']} | ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}")
 
         action = "BUY" if signal['type'] == 'B' else "SELL"
         emoji = "🟢" if signal['type'] == 'B' else "🔴"
+        mode_txt = "⚡ Real-time (tasdiqlangan)" if is_realtime else "📊 Sham yopilgan"
         await tg.send(
             f"{emoji} <b>SIGNAL: {action} {self.symbol}</b> 📡\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 <b>{mode}</b>\n"
+            f"🧩 <b>Pattern:</b> {PATTERN_NAMES.get(pattern, pattern)}\n"
+            f"🎯 <b>{mode_txt}</b>\n"
             f"📊 Narx: <b>${p_a['entry']:.4f}</b>\n"
             f"🛡 SL: ${p_a['sl']:.4f}\n"
             f"💰 Lot (har biri): {p_a['lot']}\n"
             f"🎯 <b>2 ta pozitsiya:</b>\n"
             f"   ├─ A: TP1 @ 1:1 (100%)\n"
-            f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(yopiladi)\n"
+            f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
             f"📂 Ochiq: <b>{len(self.positions)}/{CONFIG['MAX_OPEN_POS']}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
 
         ch = make_chart(self.candles, self.trades, self.symbol,
-                        CONFIG['INTERVAL'], f"· {action}",
+                        CONFIG['INTERVAL'], f"· {action} [{pattern}]",
                         open_positions=self.positions)
         if ch:
-            await tg.photo(ch, f"📊 {self.symbol} · {action}")
+            await tg.photo(ch, f"📊 {self.symbol} · {action} [{pattern}]")
 
     # ----------------------------------------------------------
     async def closeSignal(self, p):
@@ -441,20 +643,22 @@ class Engine:
         elif net_pnl < -0.01: p['result'] = 'L'; self.losses += 1
         else: p['result'] = 'BE'; self.bes += 1
 
-        self.stats_2c['net'] += net_pnl
-        if net_pnl > 0.01: self.stats_2c['wins'] += 1
-        elif net_pnl < -0.01: self.stats_2c['losses'] += 1
+        pattern = p.get('pattern', '?')
+        st = self.stats_by_pattern.setdefault(pattern, {'wins': 0, 'losses': 0, 'net': 0.0})
+        st['net'] += net_pnl
+        if net_pnl > 0.01: st['wins'] += 1
+        elif net_pnl < -0.01: st['losses'] += 1
 
         self.trades.append(p)
         self.positions.remove(p)
 
         part = p.get('part', '?')
-        log.info(f"{self.symbol} [{part}]: {p['exitR']:+.2f}R | net ${net_pnl:+.2f} | balans ${self.balance:.2f} | ochiq: {len(self.positions)}")
+        log.info(f"{self.symbol} [{pattern}-{part}]: {p['exitR']:+.2f}R | net ${net_pnl:+.2f} | balans ${self.balance:.2f} | ochiq: {len(self.positions)}")
 
         emoji = "✅" if p['result'] == 'W' else "❌" if p['result'] == 'L' else "⚪"
         rt_info = "⚡" if p.get('is_realtime') else "📊"
         await tg.send(
-            f"{emoji} <b>Yopildi [{part}]: {self.symbol}</b> {rt_info}\n"
+            f"{emoji} <b>Yopildi [{pattern}-{part}]: {self.symbol}</b> {rt_info}\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"📊 Exit: ${p['exit']:.4f}\n"
             f"🎯 R: <b>{p['exitR']:+.2f}R</b>\n"
@@ -467,10 +671,10 @@ class Engine:
         )
 
         ch = make_chart(self.candles, self.trades, self.symbol,
-                        CONFIG['INTERVAL'], f"· yopildi [{part}]",
+                        CONFIG['INTERVAL'], f"· yopildi [{pattern}-{part}]",
                         open_positions=self.positions)
         if ch:
-            await tg.photo(ch, f"📊 {self.symbol} · yopildi [{part}] ({p['result']})")
+            await tg.photo(ch, f"📊 {self.symbol} · yopildi [{pattern}-{part}] ({p['result']})")
 
         self.checkDayReset()
         day_loss = (self.day_start_balance - self.balance) / self.day_start_balance if self.day_start_balance > 0 else 0
@@ -479,45 +683,51 @@ class Engine:
             await tg.send(f"🛑 <b>{self.symbol}: KUNLIK ZARAR LIMITI</b>\n📉 -{day_loss*100:.1f}%")
 
     # ============================================================
-    # REALTIME + CONFIRMATION mantiqi — ikki bosqichli tasdiqlash
+    # REALTIME + CONFIRMATION — har pattern uchun alohida kutish holati
     # ============================================================
     async def handleRealtimeCandle(self, client, candle):
-        if len(self.candles) < 2:
+        need = CONFIG['LIQSWEEP_LOOKBACK'] + 2 if CONFIG['LIQSWEEP'] else 4
+        if len(self.candles) < need:
             return
 
-        temp = [self.candles[-2], self.candles[-1], candle]
-        sig = self.checkEngulfing(temp, 2)
+        temp = self.candles[-need:] + [candle]
+        signals = check_all_patterns(temp, len(temp) - 1)
 
-        if self.pending_signal is None:
-            if sig:
-                self.pending_signal = {
+        seen_patterns = set()
+        for sig in signals:
+            pattern = sig['pattern']
+            seen_patterns.add(pattern)
+
+            pending = self.pending_signals.get(pattern)
+            if pending is None:
+                self.pending_signals[pattern] = {
                     'signal': sig,
                     'started_at': time.time(),
-                    'last_candle': candle,
-                    'confirm_count': 1,   # birinchi marta ko'rildi
+                    'confirm_count': 1,
                 }
-                log.info(f"⏳ {self.symbol}: {sig['type']} signal kutishga qo'yildi (1/2 tasdiq, {CONFIG['CONFIRM_SECONDS']}s)")
-            return
+                log.info(f"⏳ {self.symbol}: [{pattern}] {sig['type']} signal kutishga qo'yildi")
+                continue
 
-        pending = self.pending_signal
-        elapsed = time.time() - pending['started_at']
+            elapsed = time.time() - pending['started_at']
+            if pending['signal']['type'] != sig['type']:
+                log.info(f"❌ {self.symbol}: [{pattern}] kutishdagi signal bekor qilindi")
+                self.rt_rejected += 1
+                self.pending_signals[pattern] = None
+                continue
 
-        if not sig or sig['type'] != pending['signal']['type']:
-            log.info(f"❌ {self.symbol}: kutishdagi signal bekor qilindi (candle o'zgardi)")
-            self.rt_rejected += 1
-            self.pending_signal = None
-            return
+            pending['confirm_count'] += 1
 
-        # Signal hali ham bir xil turda — tasdiq sonini oshiramiz
-        pending['confirm_count'] += 1
-        pending['last_candle'] = candle
+            if elapsed >= CONFIG['CONFIRM_SECONDS'] and pending['confirm_count'] >= 2:
+                log.info(f"✅ {self.symbol}: [{pattern}] {sig['type']} tasdiqlandi ({elapsed:.1f}s)")
+                self.rt_confirmed += 1
+                self.pending_signals[pattern] = None
+                await self.openSignal(sig, candle, is_realtime=True)
 
-        # Ikki shart bilan tasdiqlanadi: (1) yetarlicha vaqt o'tgan, (2) kamida 2 marta ko'rilgan
-        if elapsed >= CONFIG['CONFIRM_SECONDS'] and pending['confirm_count'] >= 2:
-            log.info(f"✅ {self.symbol}: {sig['type']} signal tasdiqlandi ({elapsed:.1f}s, {pending['confirm_count']} marta) — savdo ochilmoqda")
-            self.rt_confirmed += 1
-            self.pending_signal = None
-            await self.openSignal(sig, candle, is_realtime=True)
+        for pattern in list(self.pending_signals.keys()):
+            if pattern not in seen_patterns and self.pending_signals.get(pattern):
+                log.info(f"❌ {self.symbol}: [{pattern}] kutishdagi signal bekor qilindi (yo'qoldi)")
+                self.rt_rejected += 1
+                self.pending_signals[pattern] = None
 
 
 # ============================================================
@@ -548,7 +758,11 @@ async def preload_candles(client, eng, symbol):
 async def worker(client, symbol):
     eng = Engine(symbol)
     ENGINES[symbol] = eng
-    log.info(f"🔵 {symbol} worker boshlandi (MAX {CONFIG['MAX_OPEN_POS']}, DUAL={CONFIG['DUAL_ENTRY']}, REALTIME={CONFIG['REALTIME_ENTRY']}, CONFIRM={CONFIG['CONFIRM_SECONDS']}s)")
+    active_patterns = [p for p, v in [('ENG', CONFIG['ENGULFING']), ('PIN', CONFIG['PINBAR']),
+                                        ('BRK', CONFIG['BREAKOUT']), ('C3B', CONFIG['CONT3BAR']),
+                                        ('SHR', CONFIG['SHRINKING']), ('R3B', CONFIG['REV3BAR']),
+                                        ('LIQ', CONFIG['LIQSWEEP'])] if v]
+    log.info(f"🔵 {symbol} worker boshlandi | Patterns: {active_patterns} | MAX {CONFIG['MAX_OPEN_POS']}")
     await preload_candles(client, eng, symbol)
 
     bsm = BinanceSocketManager(client)
@@ -579,12 +793,12 @@ async def worker(client, symbol):
                             eng.candles.append(candle)
                         if len(eng.candles) > 200: eng.candles.pop(0)
 
-                        eng.pending_signal = None
+                        eng.pending_signals = {}
 
                         if not CONFIG['REALTIME_ENTRY']:
                             idx = len(eng.candles) - 1
-                            sig = eng.checkEngulfing(eng.candles, idx)
-                            if sig:
+                            signals = check_all_patterns(eng.candles, idx)
+                            for sig in signals:
                                 await eng.openSignal(sig, candle, is_realtime=False)
 
                     for p in list(eng.positions):
@@ -619,18 +833,24 @@ async def daily_diagnostics():
         if now.hour == CONFIG['DIAGNOSTICS_HOUR'] and sent != key:
             sent = key
             if ENGINES:
-                tw = sum(e.stats_2c['wins'] for e in ENGINES.values())
-                tl = sum(e.stats_2c['losses'] for e in ENGINES.values())
-                tn = sum(e.stats_2c['net'] for e in ENGINES.values())
+                txt = f"🔍 <b>DIAGNOSTIKA</b> {now.strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━\n"
+                all_patterns = set()
+                for e in ENGINES.values():
+                    all_patterns.update(e.stats_by_pattern.keys())
+                for pat in sorted(all_patterns):
+                    tw = sum(e.stats_by_pattern.get(pat, {}).get('wins', 0) for e in ENGINES.values())
+                    tl = sum(e.stats_by_pattern.get(pat, {}).get('losses', 0) for e in ENGINES.values())
+                    tn = sum(e.stats_by_pattern.get(pat, {}).get('net', 0.0) for e in ENGINES.values())
+                    wr = tw / (tw+tl) * 100 if (tw+tl) > 0 else 0
+                    txt += f"🧩 {PATTERN_NAMES.get(pat, pat)}: ✅{tw} ❌{tl} (WR {wr:.1f}%) | ${tn:+.2f}\n"
+
                 rt_c = sum(e.rt_confirmed for e in ENGINES.values())
                 rt_r = sum(e.rt_rejected for e in ENGINES.values())
                 tp1 = sum(e.tp1_hits for e in ENGINES.values())
                 cap = sum(e.trail_caps for e in ENGINES.values())
-                wr = tw / (tw+tl) * 100 if (tw+tl) > 0 else 0
-                txt = f"🔍 <b>DIAGNOSTIKA</b> {now.strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━\n"
-                txt += f"2C: ✅{tw} ❌{tl} (WR {wr:.1f}%) | ${tn:+.2f}\n"
-                txt += f"⚡ Tasdiqlangan: {rt_c} | ❌ Rad etilgan: {rt_r}\n"
-                txt += f"🎯 TP1 (A): {tp1} | 🧢 MAX_CAP (B, 10R): {cap}\n\n"
+                txt += f"\n⚡ Tasdiqlangan: {rt_c} | ❌ Rad etilgan: {rt_r}\n"
+                txt += f"🎯 TP1(A): {tp1} | 🧢 MAX_CAP(B,10R): {cap}\n\n"
+
                 for s, e in ENGINES.items():
                     net = e.balance - e.initial
                     em = "🟢" if net >= 0 else "🔴"
@@ -668,26 +888,28 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.9.4 — DUAL ENTRY + MIXED BODY ENGULFING + DOUBLE CONFIRMATION")
+    log.info("🚀 Bot v6.1.0 — FULL MULTI-PATTERN")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
-    log.info(f"REALTIME={CONFIG['REALTIME_ENTRY']} | DUAL={CONFIG['DUAL_ENTRY']} | CONFIRM={CONFIG['CONFIRM_SECONDS']}s")
 
-    rt_status = "Yoqilgan" if CONFIG['REALTIME_ENTRY'] else "Ochirilgan"
-    dual_status = "Yoqilgan" if CONFIG['DUAL_ENTRY'] else "Ochirilgan"
+    active_patterns = [PATTERN_NAMES[p] for p, v in [('ENG', CONFIG['ENGULFING']), ('PIN', CONFIG['PINBAR']),
+                                        ('BRK', CONFIG['BREAKOUT']), ('C3B', CONFIG['CONT3BAR']),
+                                        ('SHR', CONFIG['SHRINKING']), ('R3B', CONFIG['REV3BAR']),
+                                        ('LIQ', CONFIG['LIQSWEEP'])] if v]
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.9.4 — DUAL ENTRY</b>\n"
+        f"🚀 <b>Engulfing Bot v6.1.0 — FULL MULTI-PATTERN</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ <b>REALTIME</b>: {rt_status} ({CONFIG['CONFIRM_SECONDS']}s + 2x tasdiqlash)\n"
-        f"🎯 <b>DUAL ENTRY</b>: {dual_status}\n"
+        f"🧩 <b>Faol pattern'lar:</b>\n" + "\n".join(f"   • {p}" for p in active_patterns) + "\n\n"
+        f"⚡ REALTIME: {'Yoqilgan' if CONFIG['REALTIME_ENTRY'] else 'Ochirilgan'} ({CONFIG['CONFIRM_SECONDS']}s)\n"
+        f"🎯 DUAL ENTRY: {'Yoqilgan' if CONFIG['DUAL_ENTRY'] else 'Ochirilgan'}\n"
         f"📊 {', '.join(CONFIG['SYMBOLS'])}\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
-        f"🎯 2C Engulfing — ARALASH (OPEN vs oldingi CLOSE'lar)\n"
         f"🎯 <b>Har signal 2 pozitsiya:</b>\n"
         f"   ├─ A: TP1 @ 1:1 (100%)\n"
         f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
         f"📂 Max pozitsiya: <b>{CONFIG['MAX_OPEN_POS']}</b>\n"
         f"⚖️ Risk: {CONFIG['RISK_PCT']*100:.1f}%\n"
+        f"💵 Umumiy balans: ${CONFIG['BALANCE']:.0f} × {len(CONFIG['SYMBOLS'])}\n"
         f"✅ Aktiv"
     )
 
