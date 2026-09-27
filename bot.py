@@ -1,10 +1,11 @@
 # ============================================================
-# EngulfingTrend Bot v6.2.4 — FULL MULTI-PATTERN
+# EngulfingTrend Bot v6.2.5 — FULL MULTI-PATTERN
 # + 1 SHAM = 1 SIGNAL (priority)
 # + KIRISH FAQAT SHAM YOPILGANDA
 # + R3B rasmga mos (Morning/Evening Star)
 # + BE_AT_R=1.5, TP1_AT_R=1.0
-# + KATTA SHAM FILTRI (impuls shamdan keyin kirmaslik)
+# + KATTA SHAM FILTRI
+# + LOT_MAX=10.0, max_lot cheklovi olib tashlandi
 # ============================================================
 import os
 import asyncio
@@ -29,7 +30,7 @@ CONFIG = {
     'BALANCE':    float(os.getenv('BALANCE', '1000')),
     'RISK_PCT':   float(os.getenv('RISK_PCT', '0.02')),
     'LOT_MIN':    float(os.getenv('LOT_MIN', '0.001')),
-    'LOT_MAX':    float(os.getenv('LOT_MAX', '2.0')),
+    'LOT_MAX':    float(os.getenv('LOT_MAX', '10.0')),   # ← 10.0
     'MIN_RISK_USD': float(os.getenv('MIN_RISK_USD', '2.0')),
     'MAX_OPEN_POS': int(os.getenv('MAX_OPEN_POS', '10')),
     'PRELOAD_CANDLES': int(os.getenv('PRELOAD_CANDLES', '100')),
@@ -59,7 +60,6 @@ CONFIG = {
 
     'COMM_RATE':  float(os.getenv('COMM_RATE', '0.0005')),
 
-    # === KATTA SHAM FILTRI ===
     'BIG_CANDLE_FILTER': os.getenv('BIG_CANDLE_FILTER', 'True') == 'True',
     'BIG_CANDLE_MULT':   float(os.getenv('BIG_CANDLE_MULT', '2.5')),
     'BIG_CANDLE_LOOKBACK': int(os.getenv('BIG_CANDLE_LOOKBACK', '20')),
@@ -273,7 +273,6 @@ def check_all_patterns(cd, idx, symbol="?"):
     if signals:
         signals.sort(key=lambda s: PATTERN_PRIORITY.index(s['pattern']) if s['pattern'] in PATTERN_PRIORITY else 999)
 
-    # === KATTA SHAM FILTRI ===
     if CONFIG['BIG_CANDLE_FILTER'] and signals:
         lb = CONFIG['BIG_CANDLE_LOOKBACK']
         if idx >= lb:
@@ -282,8 +281,7 @@ def check_all_patterns(cd, idx, symbol="?"):
             cur_body = abs(cd[idx]['close'] - cd[idx]['open'])
             if avg_body > 0 and cur_body > avg_body * CONFIG['BIG_CANDLE_MULT']:
                 ratio = cur_body / avg_body
-                log.info(f"🚫 {symbol}: KATTA SHAM filtri — body={cur_body:.4f} "
-                         f"({ratio:.1f}x avg) → signal o'tkazildi")
+                log.info(f"🚫 {symbol}: KATTA SHAM filtri — {ratio:.1f}x avg → o'tkazildi")
                 return []
 
     return signals
@@ -310,13 +308,13 @@ class Engine:
         self.pending_signals = {}
 
     def calcLot(self, slDist, price):
+        # === max_lot cheklovi OLIB TASHLANDI ===
         if slDist <= 0 or price <= 0: return CONFIG['LOT_MIN']
         risk = self.balance * CONFIG['RISK_PCT']
         lot = risk / slDist
         if lot * slDist < CONFIG['MIN_RISK_USD']: lot = CONFIG['MIN_RISK_USD'] / slDist
         lot = max(CONFIG['LOT_MIN'], min(lot, CONFIG['LOT_MAX']))
-        max_lot = (self.balance * 0.95) / price
-        return round(min(lot, max_lot), 4)
+        return round(lot, 4)
 
     def openLocal(self, signal, candle, part='A'):
         cur = candle
@@ -590,12 +588,11 @@ async def daily_report():
 
 
 async def main():
-    log.info("🚀 Bot v6.2.4 — Katta sham filtri")
-    log.info(f"BE_AT_R={CONFIG['BE_AT_R']} | TP1_AT_R={CONFIG['TP1_AT_R']} | "
-             f"BIG_CANDLE_FILTER={CONFIG['BIG_CANDLE_FILTER']} ({CONFIG['BIG_CANDLE_MULT']}x)")
-    await tg.send(f"🚀 <b>Bot v6.2.4 — Katta sham filtri</b>\n"
+    log.info("🚀 Bot v6.2.5 — LOT_MAX=10.0")
+    log.info(f"BE_AT_R={CONFIG['BE_AT_R']} | TP1_AT_R={CONFIG['TP1_AT_R']} | LOT_MAX={CONFIG['LOT_MAX']}")
+    await tg.send(f"🚀 <b>Bot v6.2.5</b>\n"
                   f"🎯 BE={CONFIG['BE_AT_R']}R | TP1={CONFIG['TP1_AT_R']}R\n"
-                  f"🚫 Katta sham: {CONFIG['BIG_CANDLE_MULT']}x > o'rtacha → o'tkaziladi")
+                  f"💰 LOT_MAX={CONFIG['LOT_MAX']} | RISK={CONFIG['RISK_PCT']*100:.1f}%")
     client = await AsyncClient.create()
     tasks = [asyncio.create_task(worker(client, s)) for s in CONFIG['SYMBOLS']]
     tasks.append(asyncio.create_task(daily_report()))
