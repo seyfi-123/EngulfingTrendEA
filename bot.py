@@ -1,6 +1,6 @@
 # ============================================================
-# EngulfingTrend Bot v5.9.4 — DUAL ENTRY + MIXED BODY ENGULFING + DOUBLE CONFIRMATION
-# A: 1:1 da 100% yopiladi | B: har 2R trailing (4R->SL2, 6R->SL4, 8R->SL6, 10R->SL8), max 10R cap
+# EngulfingTrend Bot v5.9.5 — DUAL ENTRY + MIXED BODY ENGULFING + DOUBLE CONFIRMATION
+# A: 1:2 da 100% yopiladi | B: 1:2 da BE'ga o'tadi, keyin har 2R trailing
 # ============================================================
 import os
 import asyncio
@@ -39,12 +39,12 @@ CONFIG = {
     'CONFIRM_SECONDS': float(os.getenv('CONFIRM_SECONDS', '2.5')),
 
     # === Pozitsiya A ===
-    'BE_AT_R':    float(os.getenv('BE_AT_R', '1.0')),
-    'TP1_AT_R':   float(os.getenv('TP1_AT_R', '1.0')),      # A: 1:1 da 100% yopiladi
+    'BE_AT_R':    float(os.getenv('BE_AT_R', '2.0')),      # ← 1:2 da BE
+    'TP1_AT_R':   float(os.getenv('TP1_AT_R', '2.0')),     # ← A: 1:2 da 100% yopiladi
 
     # === Pozitsiya B ===
     'TRAIL_STEP': float(os.getenv('TRAIL_STEP', '2.0')),    # har 2R qadamda: 4->SL2, 6->SL4, 8->SL6, 10->SL8
-    'MAX_TRAIL_R': float(os.getenv('MAX_TRAIL_R', '10.0')), # 10R ga yetganda pozitsiya yopiladi (xavfsizlik)
+    'MAX_TRAIL_R': float(os.getenv('MAX_TRAIL_R', '10.0')), # 10R ga yetganda pozitsiya yopiladi
 
     'COMM_RATE':  float(os.getenv('COMM_RATE', '0.0005')),
 
@@ -214,8 +214,8 @@ class Engine:
             cur['close'] > cur['open']
             and p1['close'] < p1['open']
             and p2['close'] < p2['open']
-            and cur['open']  < close_bot_2     # OPEN oldingi 2 ta CLOSE'dan pastda boshlanadi
-            and cur['close'] > close_top_2     # CLOSE oldingi 2 ta CLOSE'dan yuqorida yopiladi
+            and cur['open']  < close_bot_2
+            and cur['close'] > close_top_2
         )
         bear2 = (
             cur['close'] < cur['open']
@@ -294,12 +294,12 @@ class Engine:
         else:
             maxR = (p['entry'] - candle['low']) / p['slDist']
 
-        # BE @ 1:1 — ikkala pozitsiya uchun ham
+        # BE @ 1:2 — ikkala pozitsiya uchun ham
         if maxR >= CONFIG['BE_AT_R'] and not p['beSet']:
             p['sl'] = p['entry']
             p['beSet'] = True
 
-        # ============ POZITSIYA A — 1:1 da 100% yopiladi ============
+        # ============ POZITSIYA A — 1:2 da 100% yopiladi ============
         if p.get('part') == 'A':
             if maxR >= CONFIG['TP1_AT_R'] and not p.get('tp1Done'):
                 if p['type'] == 'B':
@@ -309,16 +309,16 @@ class Engine:
 
                 p['exit'] = exit_a
                 p['exitR'] = CONFIG['TP1_AT_R']
-                p['closeReason'] = 'TP1_A (1:1)'
+                p['closeReason'] = 'TP1_A (1:2)'
                 p['gross'] += CONFIG['TP1_AT_R'] * p['riskPerR']
                 p['tp1Done'] = True
                 self.tp1_hits += 1
                 return True
             return False
 
-        # ============ POZITSIYA B — har 2R trailing: 4->SL2, 6->SL4, 8->SL6, 10->SL8 ============
+        # ============ POZITSIYA B — BE@1:2 dan keyin har 2R trailing ============
         if p.get('part') == 'B':
-            # 10R ga yetsa — pozitsiya avtomatik yopiladi (xavfsizlik "tomi")
+            # 10R ga yetsa — pozitsiya avtomatik yopiladi
             if maxR >= CONFIG['MAX_TRAIL_R']:
                 if p['type'] == 'B':
                     exit_b = p['entry'] + CONFIG['MAX_TRAIL_R'] * p['slDist']
@@ -331,7 +331,7 @@ class Engine:
                 self.trail_caps += 1
                 return True
 
-            # Har TRAIL_STEP (2R) qadamda: maxR=4->lockR=2, maxR=6->lockR=4, maxR=8->lockR=6, maxR=10->lockR=8
+            # Har TRAIL_STEP (2R) qadamda
             if maxR >= CONFIG['BE_AT_R']:
                 steps = int(maxR / CONFIG['TRAIL_STEP'])
                 lockR = (steps - 1) * CONFIG['TRAIL_STEP']
@@ -401,7 +401,7 @@ class Engine:
                 self.positions.append(p_b)
 
         mode = "⚡ RT (tasdiqlangan)" if is_realtime else "📊 Sham yopilgan"
-        log.info(f"{mode} SIGNAL {self.symbol} {signal['type']} | A=1:1, B=trail(2R qadam/10R cap) | ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}")
+        log.info(f"{mode} SIGNAL {self.symbol} {signal['type']} | A=1:2, B=BE@1:2 + trail | ochiq: {len(self.positions)}/{CONFIG['MAX_OPEN_POS']}")
 
         action = "BUY" if signal['type'] == 'B' else "SELL"
         emoji = "🟢" if signal['type'] == 'B' else "🔴"
@@ -413,8 +413,8 @@ class Engine:
             f"🛡 SL: ${p_a['sl']:.4f}\n"
             f"💰 Lot (har biri): {p_a['lot']}\n"
             f"🎯 <b>2 ta pozitsiya:</b>\n"
-            f"   ├─ A: TP1 @ 1:1 (100%)\n"
-            f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(yopiladi)\n"
+            f"   ├─ A: TP1 @ 1:2 (100%)\n"
+            f"   └─ B: BE@2R, 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(yopiladi)\n"
             f"📂 Ochiq: <b>{len(self.positions)}/{CONFIG['MAX_OPEN_POS']}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
@@ -479,7 +479,7 @@ class Engine:
             await tg.send(f"🛑 <b>{self.symbol}: KUNLIK ZARAR LIMITI</b>\n📉 -{day_loss*100:.1f}%")
 
     # ============================================================
-    # REALTIME + CONFIRMATION mantiqi — ikki bosqichli tasdiqlash
+    # REALTIME + CONFIRMATION mantiqi
     # ============================================================
     async def handleRealtimeCandle(self, client, candle):
         if len(self.candles) < 2:
@@ -494,7 +494,7 @@ class Engine:
                     'signal': sig,
                     'started_at': time.time(),
                     'last_candle': candle,
-                    'confirm_count': 1,   # birinchi marta ko'rildi
+                    'confirm_count': 1,
                 }
                 log.info(f"⏳ {self.symbol}: {sig['type']} signal kutishga qo'yildi (1/2 tasdiq, {CONFIG['CONFIRM_SECONDS']}s)")
             return
@@ -508,11 +508,9 @@ class Engine:
             self.pending_signal = None
             return
 
-        # Signal hali ham bir xil turda — tasdiq sonini oshiramiz
         pending['confirm_count'] += 1
         pending['last_candle'] = candle
 
-        # Ikki shart bilan tasdiqlanadi: (1) yetarlicha vaqt o'tgan, (2) kamida 2 marta ko'rilgan
         if elapsed >= CONFIG['CONFIRM_SECONDS'] and pending['confirm_count'] >= 2:
             log.info(f"✅ {self.symbol}: {sig['type']} signal tasdiqlandi ({elapsed:.1f}s, {pending['confirm_count']} marta) — savdo ochilmoqda")
             self.rt_confirmed += 1
@@ -630,7 +628,7 @@ async def daily_diagnostics():
                 txt = f"🔍 <b>DIAGNOSTIKA</b> {now.strftime('%d.%m.%Y')}\n━━━━━━━━━━━━━━━━━━\n"
                 txt += f"2C: ✅{tw} ❌{tl} (WR {wr:.1f}%) | ${tn:+.2f}\n"
                 txt += f"⚡ Tasdiqlangan: {rt_c} | ❌ Rad etilgan: {rt_r}\n"
-                txt += f"🎯 TP1 (A): {tp1} | 🧢 MAX_CAP (B, 10R): {cap}\n\n"
+                txt += f"🎯 TP1 (A, 1:2): {tp1} | 🧢 MAX_CAP (B, 10R): {cap}\n\n"
                 for s, e in ENGINES.items():
                     net = e.balance - e.initial
                     em = "🟢" if net >= 0 else "🔴"
@@ -668,15 +666,16 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v5.9.4 — DUAL ENTRY + MIXED BODY ENGULFING + DOUBLE CONFIRMATION")
+    log.info("🚀 Bot v5.9.5 — DUAL ENTRY + A:1:2 + B:BE@2R")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
+    log.info(f"BE_AT_R={CONFIG['BE_AT_R']} | TP1_AT_R={CONFIG['TP1_AT_R']}")
     log.info(f"REALTIME={CONFIG['REALTIME_ENTRY']} | DUAL={CONFIG['DUAL_ENTRY']} | CONFIRM={CONFIG['CONFIRM_SECONDS']}s")
 
     rt_status = "Yoqilgan" if CONFIG['REALTIME_ENTRY'] else "Ochirilgan"
     dual_status = "Yoqilgan" if CONFIG['DUAL_ENTRY'] else "Ochirilgan"
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v5.9.4 — DUAL ENTRY</b>\n"
+        f"🚀 <b>Engulfing Bot v5.9.5 — DUAL ENTRY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚡ <b>REALTIME</b>: {rt_status} ({CONFIG['CONFIRM_SECONDS']}s + 2x tasdiqlash)\n"
         f"🎯 <b>DUAL ENTRY</b>: {dual_status}\n"
@@ -684,8 +683,8 @@ async def main():
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"🎯 2C Engulfing — ARALASH (OPEN vs oldingi CLOSE'lar)\n"
         f"🎯 <b>Har signal 2 pozitsiya:</b>\n"
-        f"   ├─ A: TP1 @ 1:1 (100%)\n"
-        f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
+        f"   ├─ A: TP1 @ 1:2 (100%)\n"
+        f"   └─ B: BE@2R, 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
         f"📂 Max pozitsiya: <b>{CONFIG['MAX_OPEN_POS']}</b>\n"
         f"⚖️ Risk: {CONFIG['RISK_PCT']*100:.1f}%\n"
         f"✅ Aktiv"
