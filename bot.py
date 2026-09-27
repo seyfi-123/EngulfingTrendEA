@@ -1,7 +1,9 @@
 # ============================================================
-# EngulfingTrend Bot v6.2.0 — FULL MULTI-PATTERN
+# EngulfingTrend Bot v6.2.3 — FULL MULTI-PATTERN
 # + 1 SHAM = 1 SIGNAL (priority bo'yicha)
 # + KIRISH FAQAT SHAM YOPILGANDA
+# + R3B rasmga mos (Morning/Evening Star)
+# + FAQAT BE_AT_R=1.5 o'zgardi, qolgani v6.2.1 dagidek
 # ============================================================
 import os
 import asyncio
@@ -54,7 +56,7 @@ CONFIG = {
     'LIQSWEEP_LOOKBACK': int(os.getenv('LIQSWEEP_LOOKBACK', '10')),
 
     # === Pozitsiya A ===
-    'BE_AT_R':    float(os.getenv('BE_AT_R', '1.0')),
+    'BE_AT_R':    float(os.getenv('BE_AT_R', '1.5')),
     'TP1_AT_R':   float(os.getenv('TP1_AT_R', '1.0')),
 
     # === Pozitsiya B ===
@@ -281,22 +283,38 @@ def detect_shrinking(cd, idx):
 
 
 def detect_rev3bar(cd, idx):
+    """3-Bar Reversal (Morning Star / Evening Star) — rasmga mos."""
     if idx < 2: return None
-    cur = cd[idx]; p1 = cd[idx-1]; p2 = cd[idx-2]
+    cur = cd[idx]
+    p1  = cd[idx-1]
+    p2  = cd[idx-2]
 
-    body_p2 = abs(p2['close'] - p2['open'])
-    body_p1 = abs(p1['close'] - p1['open'])
-    if body_p2 <= 0: return None
+    body_p2  = abs(p2['close'] - p2['open'])
+    body_p1  = abs(p1['close'] - p1['open'])
+    body_cur = abs(cur['close'] - cur['open'])
+    if body_p2 <= 0 or body_p1 <= 0: return None
 
-    bull = (p2['close'] < p2['open']
-            and p1['close'] > p1['open'] and body_p1 >= body_p2 * 0.8
-            and cur['close'] > cur['open']
-            and cur['close'] > p1['close'])
+    bull = (
+        p2['close'] < p2['open']
+        and p1['close'] < p1['open']
+        and p1['low'] < p2['low']
+        and body_p1 >= body_p2 * 0.8
+        and cur['close'] > cur['open']
+        and cur['open'] < p1['close']
+        and cur['close'] > max(p1['open'], p1['close'])
+        and body_cur >= body_p1 * 0.8
+    )
 
-    bear = (p2['close'] > p2['open']
-            and p1['close'] < p1['open'] and body_p1 >= body_p2 * 0.8
-            and cur['close'] < cur['open']
-            and cur['close'] < p1['close'])
+    bear = (
+        p2['close'] > p2['open']
+        and p1['close'] > p1['open']
+        and p1['high'] > p2['high']
+        and body_p1 >= body_p2 * 0.8
+        and cur['close'] < cur['open']
+        and cur['open'] > p1['close']
+        and cur['close'] < min(p1['open'], p1['close'])
+        and body_cur >= body_p1 * 0.8
+    )
 
     if bull: return {'type': 'B', 'pattern': 'R3B'}
     if bear: return {'type': 'S', 'pattern': 'R3B'}
@@ -334,22 +352,15 @@ def detect_liqsweep(cd, idx):
     return None
 
 
-# ============================================================
-# O'ZGARISH #1 — PRIORITY QO'SHILDI
-# ============================================================
 PATTERN_NAMES = {
     'ENG': 'Engulfing', 'PIN': 'Pinbar', 'BRK': 'Breakout',
     'C3B': '3-Bar Continuation', 'SHR': 'Shrinking Candles',
     'R3B': '3-Bar Reversal', 'LIQ': 'Liquidity Sweep',
 }
 
-# Priority: eng kuchli pattern birinchi (1 shamda bir nechta bo'lsa, shu olinadi)
 PATTERN_PRIORITY = ['LIQ', 'ENG', 'R3B', 'PIN', 'BRK', 'C3B', 'SHR']
 
 
-# ============================================================
-# O'ZGARISH #2 — check_all_patterns PRIORITY BO'YICHA SARALAYDI
-# ============================================================
 def check_all_patterns(cd, idx):
     """Barcha yoqilgan pattern'larni tekshiradi, priority bo'yicha saralaydi."""
     signals = []
@@ -382,7 +393,6 @@ def check_all_patterns(cd, idx):
         s = detect_liqsweep(cd, idx)
         if s: signals.append(s)
 
-    # Priority bo'yicha saralash — eng kuchli pattern birinchi
     if signals:
         signals.sort(key=lambda s: PATTERN_PRIORITY.index(s['pattern'])
                      if s['pattern'] in PATTERN_PRIORITY else 999)
@@ -415,7 +425,7 @@ class Engine:
         self.day_key = None
         self.trading_paused = False
         self.last_signal_time = {}
-        self.last_open_candle_time = None   # ← YANGI: bir shamda bir marta ochish uchun
+        self.last_open_candle_time = None
 
         self.pending_signals = {}
 
@@ -605,7 +615,7 @@ class Engine:
             f"💰 Lot (har biri): {p_a['lot']}\n"
             f"🎯 <b>2 ta pozitsiya:</b>\n"
             f"   ├─ A: TP1 @ 1:1 (100%)\n"
-            f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
+            f"   └─ B: BE@{CONFIG['BE_AT_R']}R, 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
             f"📂 Ochiq: <b>{len(self.positions)}/{CONFIG['MAX_OPEN_POS']}</b>\n"
             f"⏰ {datetime.now().strftime('%H:%M:%S')}"
         )
@@ -670,9 +680,6 @@ class Engine:
             self.trading_paused = True
             await tg.send(f"🛑 <b>{self.symbol}: KUNLIK ZARAR LIMITI</b>\n📉 -{day_loss*100:.1f}%")
 
-    # ============================================================
-    # O'ZGARISH #3 — REALTIME'DA OCHMAYMIZ (faqat tasdiqlash statistikasi)
-    # ============================================================
     async def handleRealtimeCandle(self, client, candle):
         need = CONFIG['LIQSWEEP_LOOKBACK'] + 2 if CONFIG['LIQSWEEP'] else 4
         if len(self.candles) < need:
@@ -710,7 +717,6 @@ class Engine:
                          f"({elapsed:.1f}s) — sham yopilishini kutamiz")
                 self.rt_confirmed += 1
                 self.pending_signals[pattern] = None
-                # ⚠️ REAL-TIME'DA OCHMAYMIZ — faqat sham yopilganda (worker'da)
 
         for pattern in list(self.pending_signals.keys()):
             if pattern not in seen_patterns and self.pending_signals.get(pattern):
@@ -742,7 +748,7 @@ async def preload_candles(client, eng, symbol):
 
 
 # ============================================================
-# O'ZGARISH #4 — WORKER: 1 SHAM = 1 SIGNAL, KIRISH FAQAT SHAM YOPILGANDA
+# WORKER
 # ============================================================
 async def worker(client, symbol):
     eng = Engine(symbol)
@@ -772,11 +778,9 @@ async def worker(client, symbol):
                         'closed': k['x'],
                     }
 
-                    # Real-time handler faqat statistika uchun (ochmaydi)
                     if CONFIG['REALTIME_ENTRY'] and not candle['closed']:
                         await eng.handleRealtimeCandle(client, candle)
 
-                    # ===== SHAM YOPILGANDA =====
                     if candle['closed']:
                         if eng.candles and eng.candles[-1]['time'] == candle['time']:
                             eng.candles[-1] = candle
@@ -786,15 +790,12 @@ async def worker(client, symbol):
 
                         eng.pending_signals = {}
 
-                        # ⚠️ HAR DOIM sham yopilganda tekshiramiz
                         idx = len(eng.candles) - 1
                         signals = check_all_patterns(eng.candles, idx)
 
                         if signals:
-                            # === 1 SHAM = 1 SIGNAL ===
-                            best_sig = signals[0]   # priority bo'yicha eng kuchli
+                            best_sig = signals[0]
 
-                            # Xuddi shu shamda allaqachon pozitsiya ochilmaganini tekshiramiz
                             already_opened = (eng.last_open_candle_time == candle['time'])
 
                             if not already_opened:
@@ -807,7 +808,6 @@ async def worker(client, symbol):
                             else:
                                 log.info(f"⏭ {eng.symbol}: bu shamda allaqachon pozitsiya bor — o'tkazildi")
 
-                    # Har sham (yopiq yoki ochiq) uchun SL/TP tekshirish
                     for p in list(eng.positions):
                         if eng.manageLocal(p, candle):
                             await eng.closeSignal(p)
@@ -895,8 +895,9 @@ async def daily_report():
 # ASOSIY
 # ============================================================
 async def main():
-    log.info("🚀 Bot v6.2.0 — FULL MULTI-PATTERN (1 sham = 1 signal)")
+    log.info("🚀 Bot v6.2.3 — FULL MULTI-PATTERN (BE@1.5R)")
     log.info(f"Symbols: {CONFIG['SYMBOLS']} | TF: {CONFIG['INTERVAL']}")
+    log.info(f"BE_AT_R={CONFIG['BE_AT_R']} | TP1_AT_R={CONFIG['TP1_AT_R']}")
 
     active_patterns = [PATTERN_NAMES[p] for p, v in [('ENG', CONFIG['ENGULFING']), ('PIN', CONFIG['PINBAR']),
                                         ('BRK', CONFIG['BREAKOUT']), ('C3B', CONFIG['CONT3BAR']),
@@ -904,7 +905,7 @@ async def main():
                                         ('LIQ', CONFIG['LIQSWEEP'])] if v]
 
     await tg.send(
-        f"🚀 <b>Engulfing Bot v6.2.0 — 1 SHAM = 1 SIGNAL</b>\n"
+        f"🚀 <b>Engulfing Bot v6.2.3 — 1 SHAM = 1 SIGNAL</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🧩 <b>Faol pattern'lar:</b>\n" + "\n".join(f"   • {p}" for p in active_patterns) + "\n\n"
         f"🎯 <b>Priority (1 shamda faqat bittasi):</b>\n"
@@ -912,8 +913,8 @@ async def main():
         f"📊 <b>Kirish faqat SHAM YOPILGANDA</b>\n"
         f"⏱ TF: {CONFIG['INTERVAL']}\n"
         f"🎯 <b>Har signal 2 pozitsiya:</b>\n"
-        f"   ├─ A: TP1 @ 1:1 (100%)\n"
-        f"   └─ B: 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
+        f"   ├─ A: TP1 @ {CONFIG['TP1_AT_R']}R (100%)\n"
+        f"   └─ B: BE@{CONFIG['BE_AT_R']}R → 4R→SL2, 6R→SL4, 8R→SL6, 10R→SL8(cap)\n"
         f"📂 Max pozitsiya: <b>{CONFIG['MAX_OPEN_POS']}</b>\n"
         f"⚖️ Risk: {CONFIG['RISK_PCT']*100:.1f}%\n"
         f"💵 Umumiy balans: ${CONFIG['BALANCE']:.0f} × {len(CONFIG['SYMBOLS'])}\n"
