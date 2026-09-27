@@ -143,32 +143,32 @@ CONFIG = {
     ),
 
     "MIN_SIMILAR": int(
-        os.getenv("MIN_SIMILAR", "30")
+        os.getenv("MIN_SIMILAR", "15")
     ),
 
     "SIMILAR_GOOD_PCT": float(
-        os.getenv("SIMILAR_GOOD_PCT", "0.50")
+        os.getenv("SIMILAR_GOOD_PCT", "0.20")
     ),
 
     # Similarity tolerance
     "SIM_TOL_BODY": float(
-        os.getenv("SIM_TOL_BODY", "0.25")
+        os.getenv("SIM_TOL_BODY", "0.15")
     ),
 
     "SIM_TOL_RANGE": float(
-        os.getenv("SIM_TOL_RANGE", "0.35")
+        os.getenv("SIM_TOL_RANGE", "0.25")
     ),
 
     "SIM_TOL_WICK": float(
-        os.getenv("SIM_TOL_WICK", "0.35")
+        os.getenv("SIM_TOL_WICK", "0.25")
     ),
 
     "SIM_TOL_STRUCTURE": float(
-        os.getenv("SIM_TOL_STRUCTURE", "0.35")
+        os.getenv("SIM_TOL_STRUCTURE", "0.25")
     ),
 
     "SIM_TOL_DISTANCE": float(
-        os.getenv("SIM_TOL_DISTANCE", "0.40")
+        os.getenv("SIM_TOL_DISTANCE", "0.20")
     ),
 
     # ---------------- TIME FILTER ----------------
@@ -181,7 +181,7 @@ CONFIG = {
     ),
 
     "TIME_MIN_GOOD_PCT": float(
-        os.getenv("TIME_MIN_GOOD_PCT", "0.50")
+        os.getenv("TIME_MIN_GOOD_PCT", "0.20")
     ),
 
     # ---------------- SELF BLOCK ----------------
