@@ -28,7 +28,7 @@ CONFIG = {
     'BALANCE':    float(os.getenv('BALANCE', '1000')),
     'RISK_PCT':   float(os.getenv('RISK_PCT', '0.02')),
     'LOT_MIN':    float(os.getenv('LOT_MIN', '0.001')),
-    'LOT_MAX':    float(os.getenv('LOT_MAX', '2.0')),
+    'LOT_MAX':    float(os.getenv('LOT_MAX', '5.0')),
     'MIN_RISK_USD': float(os.getenv('MIN_RISK_USD', '2.0')),
     'MAX_OPEN_POS': int(os.getenv('MAX_OPEN_POS', '10')),
     'PRELOAD_CANDLES': int(os.getenv('PRELOAD_CANDLES', '100')),
