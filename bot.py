@@ -143,16 +143,16 @@ CONFIG = {
     ),
 
     "MIN_SIMILAR": int(
-        os.getenv("MIN_SIMILAR", "15")
+        os.getenv("MIN_SIMILAR", "25")
     ),
 
     "SIMILAR_GOOD_PCT": float(
-        os.getenv("SIMILAR_GOOD_PCT", "0.20")
+        os.getenv("SIMILAR_GOOD_PCT", "0.40")
     ),
 
     # Similarity tolerance
     "SIM_TOL_BODY": float(
-        os.getenv("SIM_TOL_BODY", "0.15")
+        os.getenv("SIM_TOL_BODY", "0.55")
     ),
 
     "SIM_TOL_RANGE": float(
@@ -160,7 +160,7 @@ CONFIG = {
     ),
 
     "SIM_TOL_WICK": float(
-        os.getenv("SIM_TOL_WICK", "0.25")
+        os.getenv("SIM_TOL_WICK", "0.55")
     ),
 
     "SIM_TOL_STRUCTURE": float(
