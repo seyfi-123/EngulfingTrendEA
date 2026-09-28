@@ -1,7 +1,27 @@
-# EngulfingTrend Bot v6.1.0
+# EngulfingTrend Bot v6.2.0
 # MARKET DATA: Twelve Data
-# Fixes: rate limiter, disk cache (incremental history), stdout logging,
-#        UTC timezone, partial-close bug.
+#
+# v6.1.0 -> v6.2.0 (FAQAT quyidagilar o'zgardi, savdo logikasi
+# (SL/TP/risk/history filter/engulfing) TEGILMAGAN):
+#
+#  FIX A) WebSocket "subscribe-status" va xato xabarlari endi
+#         jimgina tashlanmaydi -> log qilinadi va agar obuna
+#         muvaffaqiyatsiz bo'lsa Telegram'ga ogohlantirish ketadi.
+#         (Bu "jim qolish" muammosining eng ehtimolli sababi edi:
+#          socket ochiq, lekin obuna rad etilgan bo'lishi mumkin.)
+#
+#  FIX B) health_check() endi faqat ogohlantirmaydi -> uzoq jim
+#         qolgan stream'ni MAJBURIY qayta ulaydi (reconnect_event),
+#         va bitta hodisa uchun faqat BITTA marta ogohlantiradi
+#         (avvalgidek har daqiqada takrorlanmaydi), tiklanganda
+#         "tiklandi" deb alohida xabar beradi.
+#
+#  FIX C) close_signal() endi HAR yopilishda (TP_A qisman yopilish,
+#         BE, Trailing, SL) to'liq Telegram xabar + yangi grafik
+#         yuboradi: sabab, R, Gross/Comm/Net, balance, va o'sha
+#         signal ochilgandagi tarixiy (history) kontekst.
+#
+# Boshqa hech narsa o'zgartirilmadi.
 
 import os
 import io
@@ -99,6 +119,10 @@ CONFIG = {
     "MAX_HISTORY_CANDIDATES": _i("MAX_HISTORY_CANDIDATES", 5000),
     # Twelve Data free plan = 8 credits/min. 6 leaves a safety margin.
     "TD_REQ_PER_MIN": _i("TD_REQ_PER_MIN", 6),
+
+    # ---- FIX B: reconnect / alert tuning ----
+    # Stream shu qadar sekund jim tursa -> majburiy reconnect.
+    "STREAM_STALE_SEC": _i("STREAM_STALE_SEC", 90),
 }
 
 
@@ -312,6 +336,11 @@ class TwelveData:
         return await self.request("time_series", params)
 
     async def price_stream(self, symbols):
+        """
+        FIX A: endi faqat yield qilmaydi -> ulanish/obuna holatini ham
+        log qiladi, shunda market_stream() qaysi obuna muvaffaqiyatsiz
+        bo'lganini bila oladi.
+        """
 
         if not symbols:
             return
@@ -336,7 +365,8 @@ class TwelveData:
             }))
 
             log.info(
-                "Twelve Data WebSocket subscribed: %s", subscribe_symbols
+                "Twelve Data WebSocket subscribe so'rovi yuborildi: %s",
+                subscribe_symbols
             )
 
             async for raw in ws:
@@ -1114,12 +1144,20 @@ async def build_history_db(client, db, symbol, interval):
 def make_chart(
     candles, symbol, interval,
     entry=None, exit_price=None, signal=None,
+    entry_time=None, exit_time=None,
 ):
+    """
+    FIX C: endi entry_time/exit_time berilsa, ochilish va yopilish
+    nuqtalarini candle ustida ANIQ belgilaydi (o'q/marker bilan),
+    shunchaki gorizontal chiziq emas.
+    """
 
     if not candles:
         return None
 
     data = candles[-CONFIG["CHART_CANDLES"]:]
+
+    index_by_ts = {c["timestamp"]: i for i, c in enumerate(data)}
 
     fig, ax = plt.subplots(figsize=(12, 6))
 
@@ -1132,7 +1170,9 @@ def make_chart(
         l = float(c["low"])
         cl = float(c["close"])
 
-        ax.plot([i, i], [l, h], linewidth=1)
+        color = "#10b981" if cl >= o else "#ef4444"
+
+        ax.plot([i, i], [l, h], linewidth=1, color=color)
 
         if cl >= o:
             bottom = o
@@ -1142,20 +1182,61 @@ def make_chart(
             height = o - cl
 
         rect = plt.Rectangle(
-            (i - width / 2, bottom), width, max(height, 1e-12), fill=False
+            (i - width / 2, bottom), width, max(height, 1e-12),
+            fill=True, facecolor=color, edgecolor=color, alpha=0.85,
         )
 
         ax.add_patch(rect)
 
+    span = max(
+        max(float(c["high"]) for c in data)
+        - min(float(c["low"]) for c in data),
+        1e-9,
+    )
+
+    def find_idx(ts):
+        if ts is None:
+            return len(data) - 1
+        if ts in index_by_ts:
+            return index_by_ts[ts]
+        # eng yaqin candle
+        best_i, best_d = None, None
+        for i, c in enumerate(data):
+            d = abs((c["timestamp"] - ts).total_seconds())
+            if best_d is None or d < best_d:
+                best_i, best_d = i, d
+        return best_i if best_i is not None else len(data) - 1
+
     if entry is not None:
-        ax.axhline(entry, linestyle="--", linewidth=1, label="Entry")
+        i = find_idx(entry_time)
+        buy = signal == "BUY"
+        ax.scatter(
+            i, entry, marker="^" if buy else "v",
+            color="#10b981" if buy else "#ef4444",
+            s=160, zorder=6, edgecolors="white", linewidths=0.7,
+        )
+        ax.annotate(
+            "OPEN", xy=(i, entry),
+            xytext=(i, entry - span * 0.03 if buy else entry + span * 0.03),
+            ha="center", fontsize=8, fontweight="bold",
+            color="#10b981" if buy else "#ef4444",
+        )
 
     if exit_price is not None:
-        ax.axhline(exit_price, linestyle=":", linewidth=1, label="Exit")
+        i = find_idx(exit_time)
+        ax.scatter(
+            i, exit_price, marker="X",
+            color="#facc15", s=140, zorder=7,
+            edgecolors="white", linewidths=0.7,
+        )
+        ax.annotate(
+            "EXIT", xy=(i, exit_price),
+            xytext=(i, exit_price + span * 0.03),
+            ha="center", fontsize=8, fontweight="bold", color="#facc15",
+        )
 
     ax.set_title(f"{symbol} | {interval} | {signal or ''}")
     ax.grid(True, alpha=0.2)
-    ax.legend()
 
     buf = io.BytesIO()
 
@@ -1248,7 +1329,8 @@ class Engine:
 
         return lot
 
-    def open_local(self, signal, entry, sl):
+    def open_local(self, signal, entry, sl, history_result=None,
+                   opened_at=None):
 
         risk = (entry - sl) if signal == "BUY" else (sl - entry)
 
@@ -1285,8 +1367,10 @@ class Engine:
             "b_sl": sl,
             "commission": 0.0,
             "gross": 0.0,
-            "opened": datetime.now(timezone.utc),
+            "opened": opened_at or datetime.now(timezone.utc),
             "trail_r": 0.0,
+            # FIX C: yopilishda ko'rsatish uchun ochilish konteksti
+            "history_result": history_result or {},
         }
 
         open_comm = p["lot"] * p["entry"] * CONFIG["COMM_RATE"]
@@ -1297,6 +1381,81 @@ class Engine:
         self.positions.append(p)
 
         return p
+
+    # --------------------------------------------------------
+    # FIX C: to'liq Telegram YOPILISH xabari + grafik
+    # --------------------------------------------------------
+
+    async def _send_close_report(self, p, exit_price, reason,
+                                 net_pnl, gross, fraction, r_multiple,
+                                 exit_time):
+
+        emoji = "✅" if net_pnl > 0.01 else ("❌" if net_pnl < -0.01 else "⚪")
+
+        part_label = (
+            "A (qisman TP)" if reason == "TP_A"
+            else ("B (qolgan qism)" if fraction < 0.999 or p["a_closed"]
+                  else "TO'LIQ")
+        )
+
+        reason_map = {
+            "TP_A": "🎯 TP A ga yetdi (qisman yopildi, B davom etadi)",
+            "SL_BE_TRAIL": (
+                "🛡 Stop / Breakeven / Trailing bosildi"
+                if p.get("trail_r", 0) > 0 or p.get("b_sl") == p["entry"]
+                else "🛑 Stop-Loss bosildi"
+            ),
+        }
+
+        reason_text = reason_map.get(reason, reason)
+
+        hist = p.get("history_result") or {}
+
+        txt = (
+            f"{emoji} <b>YOPILDI [{part_label}] {p['symbol']} "
+            f"[{p['interval']}]</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📌 Sabab: {reason_text}\n"
+            f"🎯 R: <b>{r_multiple:+.2f}R</b>\n"
+            f"💵 Entry: {p['entry']:.6f}\n"
+            f"🚪 Exit: {exit_price:.6f}\n"
+            f"💵 Gross: ${gross:+.2f}\n"
+            f"🔻 Comm: -${p['commission']:.2f}\n"
+            f"💰 Net (shu yopilish): <b>${net_pnl:+.2f}</b>\n"
+            f"📈 Balance: <b>${self.balance:.2f}</b>\n"
+            f"🔥 Ketma-ket zarar: {self.consecutive_losses}"
+        )
+
+        if hist:
+            txt += (
+                f"\n━━━━━━━━━━━━━━━━━━\n"
+                f"📚 Ochilishdagi tarix: similar "
+                f"<b>{hist.get('count', 0)}</b>, good "
+                f"<b>{hist.get('good_pct', 0):.1%}</b>"
+            )
+
+        if self.self_blocked:
+            txt += (
+                f"\n🛑 BLOCK: {CONFIG['MAX_CONSECUTIVE_LOSSES']} "
+                f"ketma-ket zarardan keyin savdo to'xtatildi"
+            )
+
+        await TG_CLIENT.send(txt)
+
+        chart = make_chart(
+            self.candles, p["symbol"], p["interval"],
+            entry=p["entry"], exit_price=exit_price, signal=p["signal"],
+            entry_time=p.get("opened"), exit_time=exit_time,
+        )
+
+        if chart:
+            await TG_CLIENT.send_chart(
+                chart,
+                caption=(
+                    f"{p['symbol']} {p['interval']} · {p['signal']} · "
+                    f"{reason_text} · {r_multiple:+.2f}R"
+                ),
+            )
 
     def close_signal(self, p, exit_price, reason, fraction=1.0):
 
@@ -1321,8 +1480,13 @@ class Engine:
         self.gross_pnl += gross
         p["gross"] += gross
 
+        exit_time = datetime.now(timezone.utc)
+
+        risk_usd = p["risk"] * lot
+        r_multiple = net_pnl / risk_usd if risk_usd > 0 else 0.0
+
         self.trades.append({
-            "time": datetime.now(timezone.utc),
+            "time": exit_time,
             "symbol": self.symbol,
             "interval": self.interval,
             "signal": p["signal"],
@@ -1340,10 +1504,22 @@ class Engine:
             self.stats["losses"] += 1
             self.consecutive_losses += 1
 
-        if self.consecutive_losses >= CONFIG["MAX_CONSECUTIVE_LOSSES"]:
+        newly_blocked = False
 
+        if self.consecutive_losses >= CONFIG["MAX_CONSECUTIVE_LOSSES"]:
+            if not self.self_blocked:
+                newly_blocked = True
             self.self_blocked = True
 
+        # FIX C: har yopilishda to'liq hisobot + grafik yuborish
+        asyncio.create_task(
+            self._send_close_report(
+                p, exit_price, reason, net_pnl, gross,
+                fraction, r_multiple, exit_time,
+            )
+        )
+
+        if newly_blocked:
             asyncio.create_task(
                 TG_CLIENT.send(
                     f"🛑 <b>SELF BLOCK</b>\n"
@@ -1352,9 +1528,8 @@ class Engine:
                 )
             )
 
-        # FIX: remove the position ONLY on a full close.
-        # (Before, a partial TP_A close deleted the whole position,
-        #  so part B, BE and trailing never worked.)
+        # (o'zgarmagan) faqat to'liq yopilishda positions'dan olib
+        # tashlanadi, shunda TP_A B qismini o'chirib qo'ymaydi.
         if fraction >= 0.999:
             try:
                 self.positions.remove(p)
@@ -1478,7 +1653,11 @@ class Engine:
             )
             return
 
-        p = self.open_local(signal, entry, sl)
+        p = self.open_local(
+            signal, entry, sl,
+            history_result=result,
+            opened_at=candle["timestamp"],
+        )
 
         if not p:
             return
@@ -1498,13 +1677,13 @@ class Engine:
 
         chart = make_chart(
             self.candles, self.symbol, self.interval,
-            entry=entry, signal=signal,
+            entry=entry, signal=signal, entry_time=candle["timestamp"],
         )
 
         if chart:
             await TG_CLIENT.send_chart(
                 chart,
-                caption=f"{self.symbol} {self.interval} {signal}"
+                caption=f"{self.symbol} {self.interval} {signal} · OPEN"
             )
 
     async def handle_closed(self, candle):
@@ -1754,7 +1933,18 @@ async def process_price_tick(symbol, price, timestamp=None):
 # PRICE WEBSOCKET
 # ============================================================
 
+# FIX B: health_check shu Event orqali market_stream'ga
+# "majburiy qayta ulan" deb signal beradi.
+RECONNECT_EVENT = asyncio.Event()
+
+# FIX B: bitta uzilish hodisasi uchun faqat bitta marta ogohlantirish
+_ALERT_SENT = False
+_LAST_TICK_TS = {"t": time.time()}
+
+
 async def market_stream(client):
+
+    global _ALERT_SENT
 
     symbols = [normalize_symbol(x) for x in CONFIG["SYMBOLS"]]
 
@@ -1762,59 +1952,156 @@ async def market_stream(client):
 
     while True:
 
+        RECONNECT_EVENT.clear()
+
         try:
 
-            log.info("Connecting Twelve Data price stream...")
+            log.info("Twelve Data narx oqimiga ulanmoqda...")
 
-            async for raw in client.price_stream(symbols):
+            stream_gen = client.price_stream(symbols)
 
-                reconnect_delay = 3
+            recv_task = None
 
-                try:
+            async def _next_message():
+                return await stream_gen.__anext__()
 
-                    if isinstance(raw, bytes):
-                        raw = raw.decode("utf-8", errors="ignore")
+            while True:
 
-                    msg = json.loads(raw)
+                if recv_task is None:
+                    recv_task = asyncio.create_task(_next_message())
 
-                    if not isinstance(msg, dict):
-                        continue
+                wait_event = asyncio.create_task(RECONNECT_EVENT.wait())
 
-                    if msg.get("event") in ("subscribe-status", "heartbeat"):
-                        continue
+                done, pending = await asyncio.wait(
+                    {recv_task, wait_event},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
 
-                    symbol = msg.get("symbol") or msg.get("code")
-
-                    price = (
-                        msg.get("price")
-                        or msg.get("close")
-                        or msg.get("value")
+                if wait_event in done:
+                    # FIX B: health_check majburiy reconnect so'radi
+                    recv_task.cancel()
+                    for t in pending:
+                        t.cancel()
+                    log.warning(
+                        "market_stream: health_check reconnect so'radi, "
+                        "socket qayta ochilmoqda"
                     )
+                    raise ConnectionError("forced_reconnect")
 
-                    if not symbol or price is None:
-                        continue
+                wait_event.cancel()
 
-                    ts_value = msg.get("timestamp") or msg.get("time")
+                if recv_task in done:
 
-                    ts = None
+                    raw = recv_task.result()
+                    recv_task = None
 
-                    if ts_value is not None:
-                        try:
-                            if isinstance(ts_value, (int, float)):
-                                ts = datetime.fromtimestamp(
-                                    float(ts_value), tz=timezone.utc
+                    reconnect_delay = 3
+                    _LAST_TICK_TS["t"] = time.time()
+
+                    if _ALERT_SENT:
+                        _ALERT_SENT = False
+                        await TG_CLIENT.send(
+                            "✅ <b>Market data oqimi tiklandi</b>"
+                        )
+
+                    try:
+
+                        if isinstance(raw, bytes):
+                            raw = raw.decode("utf-8", errors="ignore")
+
+                        msg = json.loads(raw)
+
+                        if not isinstance(msg, dict):
+                            continue
+
+                        event = msg.get("event")
+
+                        # ---------------------------------------
+                        # FIX A: subscribe-status/heartbeat/boshqa
+                        # xato hodisalari endi log qilinadi va
+                        # muvaffaqiyatsiz obuna Telegram'ga
+                        # ogohlantiriladi (jimgina tashlanmaydi).
+                        # ---------------------------------------
+
+                        if event == "subscribe-status":
+
+                            status = msg.get("status")
+                            success = msg.get("success") or []
+                            fails = msg.get("fails") or []
+
+                            log.info(
+                                "TD subscribe-status: status=%s "
+                                "success=%s fails=%s",
+                                status, success, fails
+                            )
+
+                            if fails:
+                                await TG_CLIENT.send(
+                                    "⚠️ <b>Twelve Data OBUNA "
+                                    "MUVAFFAQIYATSIZ</b>\n"
+                                    f"Fails: {fails}\n"
+                                    "Symbol nomi yoki tarif rejasini "
+                                    "tekshiring."
                                 )
-                            else:
-                                ts = pd.to_datetime(
-                                    ts_value, utc=True
-                                ).to_pydatetime()
-                        except Exception:
-                            ts = None
 
-                    await process_price_tick(symbol, float(price), ts)
+                            if status and status != "ok":
+                                await TG_CLIENT.send(
+                                    f"⚠️ <b>Twelve Data subscribe-status: "
+                                    f"{status}</b>\n<code>{str(msg)[:500]}"
+                                    f"</code>"
+                                )
 
-                except Exception as e:
-                    log.error("Price message error: %s", e)
+                            continue
+
+                        if event == "heartbeat":
+                            continue
+
+                        if event in ("error",) or msg.get("code") not in (
+                            None, 200,
+                        ):
+                            log.error(
+                                "TD stream error message: %s", str(msg)[:500]
+                            )
+                            await TG_CLIENT.send(
+                                "⚠️ <b>Twelve Data stream xato "
+                                f"xabari</b>\n<code>{str(msg)[:500]}</code>"
+                            )
+                            continue
+
+                        symbol = msg.get("symbol") or msg.get("code")
+
+                        price = (
+                            msg.get("price")
+                            or msg.get("close")
+                            or msg.get("value")
+                        )
+
+                        if not symbol or price is None:
+                            # tanimagan xabar turi -> yo'qotmaslik uchun log
+                            log.debug("TD stream noma'lum xabar: %s", msg)
+                            continue
+
+                        ts_value = msg.get("timestamp") or msg.get("time")
+
+                        ts = None
+
+                        if ts_value is not None:
+                            try:
+                                if isinstance(ts_value, (int, float)):
+                                    ts = datetime.fromtimestamp(
+                                        float(ts_value), tz=timezone.utc
+                                    )
+                                else:
+                                    ts = pd.to_datetime(
+                                        ts_value, utc=True
+                                    ).to_pydatetime()
+                            except Exception:
+                                ts = None
+
+                        await process_price_tick(symbol, float(price), ts)
+
+                    except Exception as e:
+                        log.error("Price message error: %s", e)
 
         except asyncio.CancelledError:
             raise
@@ -1866,39 +2153,54 @@ async def daily_report():
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH CHECK  (FIX B)
 # ============================================================
 
 async def health_check():
+    """
+    Avvalgi versiya faqat har 60 sekundda ogohlantirar edi va
+    hech qachon o'zi tuzatmasdi. Endi:
+      - Global oxirgi tick vaqtiga qaraydi (barcha symbol/TF umumiy
+        bitta socket orqali kelgani uchun bitta global soat yetarli).
+      - STREAM_STALE_SEC dan uzoqroq jim bo'lsa: BIR marta ogohlantiradi
+        va RECONNECT_EVENT orqali market_stream'ni majburan qayta
+        ulanishga majbur qiladi.
+      - Tiklangach market_stream o'zi "tiklandi" deb xabar beradi.
+    """
+
+    global _ALERT_SENT
 
     while True:
 
         try:
-
             now = time.time()
+            silent = now - _LAST_TICK_TS["t"]
 
-            dead = []
+            if silent > CONFIG["STREAM_STALE_SEC"] and not _ALERT_SENT:
 
+                _ALERT_SENT = True
+
+                await TG_CLIENT.send(
+                    "⚠️ <b>MARKET DATA JIM</b>\n"
+                    f"{silent / 60:.1f} daqiqadan beri tick yo'q.\n"
+                    "🔄 Socket majburiy qayta ulanmoqda..."
+                )
+
+                RECONNECT_EVENT.set()
+
+            # ham per-engine eski loglash (diagnostika uchun foydali)
             for key, engine in ENGINES.items():
-
                 age = now - engine.last_candle_time
-
                 if age > CONFIG["SOCKET_TIMEOUT_MIN"] * 60:
-                    dead.append((engine.symbol, engine.interval, age))
-
-            if dead:
-
-                text = "⚠️ <b>MARKET DATA WARNING</b>\n"
-
-                for symbol, interval, age in dead:
-                    text += f"{symbol} {interval}: {age / 60:.1f} min\n"
-
-                await TG_CLIENT.send(text)
+                    log.warning(
+                        "%s %s: %.1f min candle kelmagan",
+                        engine.symbol, engine.interval, age / 60
+                    )
 
         except Exception as e:
             log.error("Health error: %s", e)
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(20)
 
 
 # ============================================================
@@ -1988,7 +2290,7 @@ async def main():
         log.warning("TELEGRAM_CHAT_ID is missing")
 
     log.info("=" * 50)
-    log.info("EngulfingTrend Bot v6.1.0")
+    log.info("EngulfingTrend Bot v6.2.0")
     log.info("Market data: Twelve Data")
     log.info("Symbols: %s", CONFIG["SYMBOLS"])
     log.info("Intervals: %s", CONFIG["INTERVALS"])
@@ -2000,6 +2302,8 @@ async def main():
 
     client = TwelveData(TWELVE_DATA_API_KEY)
     db = HistoricalDB()
+
+    _LAST_TICK_TS["t"] = time.time()
 
     try:
 
@@ -2043,12 +2347,13 @@ async def main():
         # ---------------- TELEGRAM START ----------------
 
         await TG_CLIENT.send(
-            "🟢 <b>EngulfingTrend Bot v6.1.0 STARTED</b>\n\n"
+            "🟢 <b>EngulfingTrend Bot v6.2.0 STARTED</b>\n\n"
             "Market: Twelve Data\n"
             f"Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
             f"Timeframes: {', '.join(CONFIG['INTERVALS'])}\n"
             f"Commission: {CONFIG['COMM_RATE']}\n"
-            f"Historical DB: {CONFIG['HISTORY_MONTHS']} months"
+            f"Historical DB: {CONFIG['HISTORY_MONTHS']} months\n"
+            f"Stale reconnect: {CONFIG['STREAM_STALE_SEC']}s"
         )
 
         # ---------------- RUN ----------------
