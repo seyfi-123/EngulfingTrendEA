@@ -1,48 +1,40 @@
-# ============================================================
 # EngulfingTrend Bot v6.0.0
-#
-# REALTIME PRICE ACTION
-# + OPEN/CLOSE/HIGH/LOW
-# + LAST 10 CANDLE STRUCTURE
-# + 6 MONTH HISTORICAL SIMILARITY
-# + TIME-WINDOW FILTER
-# + 50% GOOD HISTORICAL SETUPS
-# + 10 LOSS SELF-BLOCK
-# + TOTAL RISK 2% PER SIGNAL
-# + A = 1% / TP 2R
-# + B = 1% / BE 2R / TRAILING
-#
-# ADDITIONS:
-# 1) 4 INDEPENDENT TIMEFRAMES
-# 2) TELEGRAM CLOSE CHART
-# 3) LIVE CANDLE HISTORY FILTER
-#
-# IMPORTANT:
-# Historical filter uses ONLY data before the current setup.
-# No future candles are used for deciding a live entry.
-# ============================================================
+# MARKET DATA: Twelve Data
+# Binance removed.
+# Telegram / strategy / historical similarity / time filter / A-B / risk / BE / trailing /
+# consecutive-loss block / charts / Railway structure preserved.
 
 import os
 import io
 import math
 import time
+import json
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
+import aiohttp
+import websockets
 import pandas as pd
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from dotenv import load_dotenv
-from binance import AsyncClient, BinanceSocketManager
-
 from telegram import Bot, InputFile
 from telegram.constants import ParseMode
 
 
+# ============================================================
+# ENV
+# ============================================================
+
 load_dotenv()
+
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 
 # ============================================================
@@ -50,61 +42,59 @@ load_dotenv()
 # ============================================================
 
 CONFIG = {
-    # ---------------- BASIC ----------------
+    # Real market symbols.
+    #
+    # Examples:
+    # XAU/USD = Gold
+    # EUR/USD = Forex
+    # GBP/USD = Forex
+    # SPX      = S&P 500 if available on your Twelve Data plan/account
+    #
+    # You can change these in Railway Variables.
     "SYMBOLS": [
-        s.strip().upper()
-        for s in os.getenv(
+        x.strip()
+        for x in os.getenv(
             "SYMBOLS",
-            "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT"
+            "XAU/USD,EUR/USD,GBP/USD,SPX"
         ).split(",")
-        if s.strip()
+        if x.strip()
     ],
 
-    # ========================================================
-    # ADDITION 1:
-    # 4 independent timeframes
-    #
-    # Example:
-    # INTERVALS=1m,5m,15m,1h
-    #
-    # If INTERVALS is not provided, old INTERVAL is used.
-    # ========================================================
+    # Bot timeframes
+    "INTERVALS": [
+        x.strip()
+        for x in os.getenv(
+            "INTERVALS",
+            "1m,5m,15m,1h"
+        ).split(",")
+        if x.strip()
+    ],
 
     "INTERVAL": os.getenv("INTERVAL", "1m"),
 
-    "INTERVALS": [
-        s.strip()
-        for s in os.getenv(
-            "INTERVALS",
-            os.getenv("INTERVAL", "1m,5m,15m,1h")
-        ).split(",")
-        if s.strip()
-    ],
-
+    # Account / risk
     "BALANCE": float(os.getenv("BALANCE", "1000")),
     "RISK_PCT": float(os.getenv("RISK_PCT", "0.02")),
-
-    # Each signal = 2% TOTAL risk
-    # A = 1%
-    # B = 1%
     "PART_RISK_RATIO": float(os.getenv("PART_RISK_RATIO", "0.50")),
 
     "LOT_MIN": float(os.getenv("LOT_MIN", "0.001")),
     "LOT_MAX": float(os.getenv("LOT_MAX", "5.0")),
-
     "MIN_RISK_USD": float(os.getenv("MIN_RISK_USD", "1.0")),
 
     "MAX_OPEN_POS": int(os.getenv("MAX_OPEN_POS", "10")),
 
-    "PRELOAD_CANDLES": int(
-        os.getenv("PRELOAD_CANDLES", "300")
+    # History
+    "PRELOAD_CANDLES": int(os.getenv("PRELOAD_CANDLES", "300")),
+    "HISTORY_MONTHS": int(os.getenv("HISTORY_MONTHS", "6")),
+    "HISTORY_LOOKBACK_CANDLES": int(
+        os.getenv("HISTORY_LOOKBACK_CANDLES", "10")
     ),
 
+    # Strategy
     "SL_BUF": float(os.getenv("SL_BUF", "10")),
 
-    # ---------------- ENTRY ----------------
     "REALTIME_ENTRY": os.getenv(
-        "REALTIME_ENTRY", "True"
+        "REALTIME_ENTRY", "true"
     ).lower() == "true",
 
     "CONFIRM_SECONDS": float(
@@ -115,85 +105,50 @@ CONFIG = {
         os.getenv("CONFIRM_TICKS", "2")
     ),
 
-    # ---------------- RR ----------------
-    "A_TP_R": float(os.getenv("A_TP_R", "2.0")),
+    # RR
+    "A_TP_R": float(os.getenv("A_TP_R", "2")),
+    "BE_AT_R": float(os.getenv("BE_AT_R", "2")),
+    "TRAIL_STEP_R": float(os.getenv("TRAIL_STEP_R", "2")),
+    "MAX_TRAIL_R": float(os.getenv("MAX_TRAIL_R", "10")),
 
-    "BE_AT_R": float(os.getenv("BE_AT_R", "2.0")),
+    # Commission
+    #
+    # This is NOT Binance commission.
+    # 0 = pure strategy / market-data test.
+    "COMM_RATE": float(os.getenv("COMM_RATE", "0")),
 
-    "TRAIL_STEP_R": float(
-        os.getenv("TRAIL_STEP_R", "2.0")
-    ),
-
-    "MAX_TRAIL_R": float(
-        os.getenv("MAX_TRAIL_R", "10.0")
-    ),
-
-    # ---------------- COST ----------------
-    "COMM_RATE": float(
-        os.getenv("COMM_RATE", "0.0005")
-    ),
-
-    # ---------------- HISTORY ----------------
-    "HISTORY_MONTHS": int(
-        os.getenv("HISTORY_MONTHS", "6")
-    ),
-
-    "HISTORY_LOOKBACK_CANDLES": int(
-        os.getenv("HISTORY_LOOKBACK_CANDLES", "10")
-    ),
-
-    "MIN_SIMILAR": int(
-        os.getenv("MIN_SIMILAR", "25")
-    ),
-
+    # Historical similarity
+    "MIN_SIMILAR": int(os.getenv("MIN_SIMILAR", "25")),
     "SIMILAR_GOOD_PCT": float(
         os.getenv("SIMILAR_GOOD_PCT", "0.40")
     ),
 
-    # Similarity tolerance
-    "SIM_TOL_BODY": float(
-        os.getenv("SIM_TOL_BODY", "0.55")
-    ),
+    "BODY_TOL": float(os.getenv("BODY_TOL", "0.35")),
+    "RANGE_TOL": float(os.getenv("RANGE_TOL", "0.35")),
+    "WICK_TOL": float(os.getenv("WICK_TOL", "0.35")),
+    "STRUCT_TOL": float(os.getenv("STRUCT_TOL", "0.50")),
+    "DIST_TOL": float(os.getenv("DIST_TOL", "0.50")),
 
-    "SIM_TOL_RANGE": float(
-        os.getenv("SIM_TOL_RANGE", "0.25")
-    ),
-
-    "SIM_TOL_WICK": float(
-        os.getenv("SIM_TOL_WICK", "0.55")
-    ),
-
-    "SIM_TOL_STRUCTURE": float(
-        os.getenv("SIM_TOL_STRUCTURE", "0.25")
-    ),
-
-    "SIM_TOL_DISTANCE": float(
-        os.getenv("SIM_TOL_DISTANCE", "0.20")
-    ),
-
-    # ---------------- TIME FILTER ----------------
+    # Time filter
     "TIME_BUCKET_MINUTES": int(
         os.getenv("TIME_BUCKET_MINUTES", "60")
     ),
-
     "TIME_MIN_SAMPLES": int(
         os.getenv("TIME_MIN_SAMPLES", "20")
     ),
-
     "TIME_MIN_GOOD_PCT": float(
         os.getenv("TIME_MIN_GOOD_PCT", "0.20")
     ),
 
-    # ---------------- SELF BLOCK ----------------
+    # Self block
     "MAX_CONSECUTIVE_LOSSES": int(
         os.getenv("MAX_CONSECUTIVE_LOSSES", "10")
     ),
 
-    # ---------------- REPORT ----------------
+    # Reporting
     "REPORT_HOUR": int(
         os.getenv("REPORT_HOUR", "18")
     ),
-
     "DIAGNOSTICS_HOUR": int(
         os.getenv("DIAGNOSTICS_HOUR", "9")
     ),
@@ -210,19 +165,14 @@ CONFIG = {
         os.getenv("CHART_CANDLES", "100")
     ),
 
-    # Historical download batch
-    "HISTORY_LIMIT": 1000,
+    "HISTORY_LIMIT": int(
+        os.getenv("HISTORY_LIMIT", "1000")
+    ),
 
-    # How many historical candidates to inspect after
-    # rough filtering
     "MAX_HISTORY_CANDIDATES": int(
         os.getenv("MAX_HISTORY_CANDIDATES", "5000")
     ),
 }
-
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
 # ============================================================
@@ -231,11 +181,177 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
+    format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("EngulfingTrend")
+
+
+# ============================================================
+# TWELVE DATA
+# ============================================================
+
+TD_BASE = "https://api.twelvedata.com"
+TD_WS = "wss://ws.twelvedata.com/v1/quotes/price"
+
+
+def td_interval(interval):
+    mapping = {
+        "1m": "1min",
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "45m": "45min",
+        "1h": "1h",
+        "2h": "2h",
+        "4h": "4h",
+        "8h": "8h",
+        "1d": "1day",
+    }
+    return mapping.get(interval, interval)
+
+
+def interval_seconds(interval):
+    mapping = {
+        "1m": 60,
+        "5m": 300,
+        "15m": 900,
+        "30m": 1800,
+        "45m": 2700,
+        "1h": 3600,
+        "2h": 7200,
+        "4h": 14400,
+        "8h": 28800,
+        "1d": 86400,
+    }
+
+    return mapping.get(interval, 60)
+
+
+def normalize_symbol(symbol):
+    symbol = symbol.strip().upper()
+
+    aliases = {
+        "GOLD": "XAU/USD",
+        "XAUUSD": "XAU/USD",
+        "EURUSD": "EUR/USD",
+        "GBPUSD": "GBP/USD",
+        "USDJPY": "USD/JPY",
+        "AUDUSD": "AUD/USD",
+        "NZDUSD": "NZD/USD",
+        "USDCAD": "USD/CAD",
+        "USDCHF": "USD/CHF",
+        "SP500": "SPX",
+        "S&P500": "SPX",
+        "S&P 500": "SPX",
+    }
+
+    return aliases.get(symbol, symbol)
+
+
+class TwelveData:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.session = None
+
+    async def start(self):
+        if self.session is None:
+            self.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=60)
+            )
+
+    async def close(self):
+        if self.session:
+            await self.session.close()
+            self.session = None
+
+    async def request(self, endpoint, params):
+        await self.start()
+
+        params = dict(params)
+        params["apikey"] = self.api_key
+
+        url = f"{TD_BASE}/{endpoint}"
+
+        async with self.session.get(url, params=params) as r:
+            text = await r.text()
+
+            if r.status != 200:
+                raise RuntimeError(
+                    f"Twelve Data HTTP {r.status}: {text[:500]}"
+                )
+
+            try:
+                data = json.loads(text)
+            except Exception:
+                raise RuntimeError(
+                    f"Invalid Twelve Data response: {text[:500]}"
+                )
+
+            if isinstance(data, dict) and data.get("status") == "error":
+                raise RuntimeError(
+                    data.get("message", "Twelve Data API error")
+                )
+
+            return data
+
+    async def time_series(
+        self,
+        symbol,
+        interval,
+        outputsize=5000,
+        start_date=None,
+        end_date=None,
+    ):
+        params = {
+            "symbol": normalize_symbol(symbol),
+            "interval": td_interval(interval),
+            "outputsize": outputsize,
+            "format": "JSON",
+        }
+
+        if start_date:
+            params["start_date"] = start_date
+
+        if end_date:
+            params["end_date"] = end_date
+
+        return await self.request("time_series", params)
+
+    async def price_stream(self, symbols):
+        if not symbols:
+            return
+
+        url = f"{TD_WS}?apikey={self.api_key}"
+
+        async with websockets.connect(
+            url,
+            ping_interval=20,
+            ping_timeout=20,
+            close_timeout=10,
+            max_size=2**20,
+        ) as ws:
+
+            subscribe_symbols = ",".join(
+                normalize_symbol(x) for x in symbols
+            )
+
+            await ws.send(
+                json.dumps({
+                    "action": "subscribe",
+                    "params": {
+                        "symbols": subscribe_symbols
+                    }
+                })
+            )
+
+            log.info(
+                "Twelve Data WebSocket subscribed: %s",
+                subscribe_symbols
+            )
+
+            async for raw in ws:
+                yield raw
 
 
 # ============================================================
@@ -243,117 +359,104 @@ log = logging.getLogger(__name__)
 # ============================================================
 
 class TG:
-
     def __init__(self, token, chat_id):
-        self.bot = Bot(token=token) if token else None
+        self.token = token
         self.chat_id = chat_id
+        self.bot = Bot(token=token) if token else None
 
-    async def send(self, msg):
-
-        if not self.bot:
+    async def send(self, text):
+        if not self.bot or not self.chat_id:
             return
 
         try:
             await self.bot.send_message(
                 chat_id=self.chat_id,
-                text=msg,
-                parse_mode=ParseMode.HTML
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
             )
-
         except Exception as e:
-            log.error(f"TG send: {e}")
+            log.error("Telegram send error: %s", e)
 
-    async def photo(self, buf, caption=""):
-
-        if not self.bot:
+    async def send_chart(self, image_bytes, caption=""):
+        if not self.bot or not self.chat_id:
             return
 
         try:
             await self.bot.send_photo(
                 chat_id=self.chat_id,
                 photo=InputFile(
-                    buf,
+                    io.BytesIO(image_bytes),
                     filename="chart.png"
                 ),
-                caption=caption,
-                parse_mode=ParseMode.HTML
+                caption=caption[:1024],
+                parse_mode=ParseMode.HTML,
             )
-
         except Exception as e:
-            log.error(f"TG photo: {e}")
+            log.error("Telegram chart error: %s", e)
 
 
-tg = TG(
+TG_CLIENT = TG(
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID
 )
 
 
 # ============================================================
-# BASIC CANDLE HELPERS
+# CANDLE HELPERS
 # ============================================================
 
 def candle_range(c):
-    return max(
-        float(c["high"]) - float(c["low"]),
-        1e-12
-    )
+    return max(float(c["high"]) - float(c["low"]), 1e-12)
 
 
 def body_size(c):
-    return abs(
-        float(c["close"]) -
-        float(c["open"])
-    )
+    return abs(float(c["close"]) - float(c["open"]))
 
 
 def body_ratio(c):
-    r = candle_range(c)
-    return body_size(c) / r
+    return body_size(c) / candle_range(c)
 
 
 def upper_wick_ratio(c):
+    h = float(c["high"])
+    o = float(c["open"])
+    cl = float(c["close"])
 
-    r = candle_range(c)
-
-    upper = float(c["high"]) - max(
-        float(c["open"]),
-        float(c["close"])
-    )
-
-    return max(0.0, upper) / r
+    return max(
+        0.0,
+        h - max(o, cl)
+    ) / candle_range(c)
 
 
 def lower_wick_ratio(c):
+    l = float(c["low"])
+    o = float(c["open"])
+    cl = float(c["close"])
 
-    r = candle_range(c)
-
-    lower = min(
-        float(c["open"]),
-        float(c["close"])
-    ) - float(c["low"])
-
-    return max(0.0, lower) / r
+    return max(
+        0.0,
+        min(o, cl) - l
+    ) / candle_range(c)
 
 
 def close_position(c):
-
-    r = candle_range(c)
-
     return (
-        float(c["close"]) -
-        float(c["low"])
-    ) / r
+        (float(c["close"]) - float(c["low"]))
+        / candle_range(c)
+    )
 
 
 def signed_body(c):
-
     r = candle_range(c)
 
+    if r <= 0:
+        return 0.0
+
     return (
-        float(c["close"]) -
-        float(c["open"])
-    ) / r
+        (float(c["close"]) - float(c["open"]))
+        / r
+    )
 
 
 # ============================================================
@@ -361,8 +464,7 @@ def signed_body(c):
 # ============================================================
 
 def structure_features(candles):
-
-    if len(candles) < 10:
+    if len(candles) < 3:
         return {
             "trend": 0.0,
             "hh": 0.0,
@@ -372,30 +474,28 @@ def structure_features(candles):
             "range_pos": 0.5,
         }
 
-    last10 = candles[-10:]
+    recent = candles[-10:]
 
-    highs = [
-        float(x["high"])
-        for x in last10
-    ]
+    highs = [float(x["high"]) for x in recent]
+    lows = [float(x["low"]) for x in recent]
 
-    lows = [
-        float(x["low"])
-        for x in last10
-    ]
+    trend = (
+        float(recent[-1]["close"])
+        - float(recent[0]["open"])
+    )
 
-    closes = [
-        float(x["close"])
-        for x in last10
-    ]
+    avg_range = sum(
+        candle_range(x) for x in recent
+    ) / max(len(recent), 1)
+
+    trend_norm = trend / max(avg_range * len(recent), 1e-12)
 
     hh = 0
     hl = 0
     lh = 0
     ll = 0
 
-    for i in range(2, len(last10)):
-
+    for i in range(1, len(recent)):
         if highs[i] > highs[i - 1]:
             hh += 1
 
@@ -408,32 +508,19 @@ def structure_features(candles):
         if lows[i] < lows[i - 1]:
             ll += 1
 
-    up_score = hh + hl
-    down_score = lh + ll
-
-    trend = (
-        up_score - down_score
-    ) / max(
-        1,
-        up_score + down_score
-    )
-
-    highest = max(highs)
-    lowest = min(lows)
+    last = recent[-1]
 
     range_pos = (
-        closes[-1] - lowest
-    ) / max(
-        highest - lowest,
-        1e-12
+        (float(last["close"]) - min(lows))
+        / max(max(highs) - min(lows), 1e-12)
     )
 
     return {
-        "trend": trend,
-        "hh": hh / 8.0,
-        "hl": hl / 8.0,
-        "lh": lh / 8.0,
-        "ll": ll / 8.0,
+        "trend": trend_norm,
+        "hh": hh / max(len(recent) - 1, 1),
+        "hl": hl / max(len(recent) - 1, 1),
+        "lh": lh / max(len(recent) - 1, 1),
+        "ll": ll / max(len(recent) - 1, 1),
         "range_pos": range_pos,
     }
 
@@ -443,484 +530,229 @@ def structure_features(candles):
 # ============================================================
 
 def detect_engulfing(candles, idx):
-
-    if idx < 2:
+    if idx < 1:
         return None
 
+    prev = candles[idx - 1]
     cur = candles[idx]
-    p1 = candles[idx - 1]
-    p2 = candles[idx - 2]
 
-    top = max(
-        float(p1["close"]),
-        float(p2["close"])
-    )
+    po = float(prev["open"])
+    pc = float(prev["close"])
 
-    bottom = min(
-        float(p1["close"]),
-        float(p2["close"])
-    )
+    co = float(cur["open"])
+    cc = float(cur["close"])
 
-    # ---------------- BULL ----------------
+    # Bullish engulfing
+    if (
+        pc < po
+        and cc > co
+        and co <= pc
+        and cc >= po
+    ):
+        return "BUY"
 
-    bull = (
-        float(cur["close"]) >
-        float(cur["open"])
-        and
-        float(p1["close"]) <
-        float(p1["open"])
-        and
-        float(p2["close"]) <
-        float(p2["open"])
-        and
-        float(cur["open"]) < bottom
-        and
-        float(cur["close"]) > top
-    )
-
-    if bull:
-
-        return {
-            "type": "B",
-            "candles": 2,
-            "trigger": top,
-        }
-
-    # ---------------- BEAR ----------------
-
-    bear = (
-        float(cur["close"]) <
-        float(cur["open"])
-        and
-        float(p1["close"]) >
-        float(p1["open"])
-        and
-        float(p2["close"]) >
-        float(p2["open"])
-        and
-        float(cur["open"]) > top
-        and
-        float(cur["close"]) < bottom
-    )
-
-    if bear:
-
-        return {
-            "type": "S",
-            "candles": 2,
-            "trigger": bottom,
-        }
+    # Bearish engulfing
+    if (
+        pc > po
+        and cc < co
+        and co >= pc
+        and cc <= po
+    ):
+        return "SELL"
 
     return None
 
 
 # ============================================================
-# FEATURE EXTRACTION
+# FEATURES
 # ============================================================
 
 def make_features(candles, idx, signal):
+    start = max(0, idx - CONFIG["HISTORY_LOOKBACK_CANDLES"] + 1)
 
-    if idx < 10:
+    sample = candles[start:idx + 1]
+
+    if not sample:
         return None
 
-    cur = candles[idx]
-    p1 = candles[idx - 1]
-    p2 = candles[idx - 2]
+    current = candles[idx]
 
-    recent = candles[
-        idx - CONFIG["HISTORY_LOOKBACK_CANDLES"] + 1:
-        idx + 1
+    ranges = [
+        candle_range(x)
+        for x in sample
     ]
 
-    if len(recent) < CONFIG["HISTORY_LOOKBACK_CANDLES"]:
-        return None
-
-    sf = structure_features(recent)
-
-    entry = float(cur["close"])
-
-    if signal["type"] == "B":
-
-        trigger_distance = (
-            entry - signal["trigger"]
-        ) / max(
-            entry,
-            1e-12
-        )
-
-        sl_base = min(
-            float(cur["low"]),
-            float(p1["low"]),
-            float(p2["low"])
-        )
-
-    else:
-
-        trigger_distance = (
-            signal["trigger"] - entry
-        ) / max(
-            entry,
-            1e-12
-        )
-
-        sl_base = max(
-            float(cur["high"]),
-            float(p1["high"]),
-            float(p2["high"])
-        )
-
-    price_range = (
-        max(
-            float(x["high"])
-            for x in recent
-        )
-        -
-        min(
-            float(x["low"])
-            for x in recent
-        )
+    avg_range = (
+        sum(ranges) / max(len(ranges), 1)
     )
 
-    range_pct = (
-        price_range /
-        max(entry, 1e-12)
-    )
+    sf = structure_features(sample)
 
     return {
-        "type": signal["type"],
+        "signal": signal,
 
-        "body": body_ratio(cur),
-
-        "upper_wick": upper_wick_ratio(cur),
-
-        "lower_wick": lower_wick_ratio(cur),
-
-        "close_pos": close_position(cur),
-
-        "signed_body": signed_body(cur),
-
-        "p1_body": body_ratio(p1),
-
-        "p2_body": body_ratio(p2),
-
-        "range_pct": range_pct,
-
-        "trigger_distance": trigger_distance,
+        "body": body_ratio(current),
+        "range": candle_range(current) / max(avg_range, 1e-12),
+        "upper_wick": upper_wick_ratio(current),
+        "lower_wick": lower_wick_ratio(current),
+        "close_position": close_position(current),
+        "signed_body": signed_body(current),
 
         "trend": sf["trend"],
-
         "hh": sf["hh"],
-
         "hl": sf["hl"],
-
         "lh": sf["lh"],
-
         "ll": sf["ll"],
-
         "range_pos": sf["range_pos"],
 
-        "sl_base": sl_base,
+        "entry": float(current["close"]),
 
-        "entry": entry,
-
-        "time": int(cur["time"]),
+        "high": float(current["high"]),
+        "low": float(current["low"]),
     }
 
 
 # ============================================================
-# SIMILARITY
+# DISTANCE
 # ============================================================
 
-def normalized_distance(a, b, tolerance):
+def normalized_distance(a, b):
+    if a is None or b is None:
+        return 999.0
 
-    if tolerance <= 0:
-        tolerance = 0.01
-
-    return abs(a - b) / tolerance
+    return abs(float(a) - float(b))
 
 
 def feature_distance(a, b):
-
-    if a["type"] != b["type"]:
+    if not a or not b:
         return 999.0
 
-    values = []
+    dist = 0.0
 
-    values.append(
-        normalized_distance(
-            a["body"],
-            b["body"],
-            CONFIG["SIM_TOL_BODY"]
-        )
+    dist += min(
+        normalized_distance(a["body"], b["body"])
+        / max(CONFIG["BODY_TOL"], 1e-12),
+        5
     )
 
-    values.append(
+    dist += min(
+        normalized_distance(a["range"], b["range"])
+        / max(CONFIG["RANGE_TOL"], 1e-12),
+        5
+    )
+
+    dist += min(
         normalized_distance(
             a["upper_wick"],
-            b["upper_wick"],
-            CONFIG["SIM_TOL_WICK"]
-        )
+            b["upper_wick"]
+        ) / max(CONFIG["WICK_TOL"], 1e-12),
+        5
     )
 
-    values.append(
+    dist += min(
         normalized_distance(
             a["lower_wick"],
-            b["lower_wick"],
-            CONFIG["SIM_TOL_WICK"]
-        )
+            b["lower_wick"]
+        ) / max(CONFIG["WICK_TOL"], 1e-12),
+        5
     )
 
-    values.append(
-        normalized_distance(
-            a["close_pos"],
-            b["close_pos"],
-            CONFIG["SIM_TOL_WICK"]
-        )
-    )
+    structure_keys = [
+        "trend",
+        "hh",
+        "hl",
+        "lh",
+        "ll",
+        "range_pos",
+    ]
 
-    values.append(
-        normalized_distance(
-            a["p1_body"],
-            b["p1_body"],
-            CONFIG["SIM_TOL_BODY"]
+    for key in structure_keys:
+        dist += min(
+            normalized_distance(
+                a.get(key, 0),
+                b.get(key, 0)
+            ) / max(CONFIG["STRUCT_TOL"], 1e-12),
+            5
         )
-    )
 
-    values.append(
-        normalized_distance(
-            a["p2_body"],
-            b["p2_body"],
-            CONFIG["SIM_TOL_BODY"]
-        )
-    )
-
-    values.append(
-        normalized_distance(
-            a["range_pct"],
-            b["range_pct"],
-            CONFIG["SIM_TOL_RANGE"]
-        )
-    )
-
-    values.append(
-        normalized_distance(
-            a["trigger_distance"],
-            b["trigger_distance"],
-            CONFIG["SIM_TOL_DISTANCE"]
-        )
-    )
-
-    values.append(
-        normalized_distance(
-            a["trend"],
-            b["trend"],
-            CONFIG["SIM_TOL_STRUCTURE"]
-        )
-    )
-
-    values.append(
-        normalized_distance(
-            a["hh"],
-            b["hh"],
-            CONFIG["SIM_TOL_STRUCTURE"]
-        )
-    )
-
-    values.append(
-        normalized_distance(
-            a["hl"],
-            b["hl"],
-            CONFIG["SIM_TOL_STRUCTURE"]
-        )
-    )
-
-    values.append(
-        normalized_distance(
-            a["lh"],
-            b["lh"],
-            CONFIG["SIM_TOL_STRUCTURE"]
-        )
-    )
-
-    values.append(
-        normalized_distance(
-            a["ll"],
-            b["ll"],
-            CONFIG["SIM_TOL_STRUCTURE"]
-        )
-    )
-
-    return sum(values) / len(values)
+    return dist
 
 
 # ============================================================
-# HISTORICAL OUTCOME
+# HISTORICAL TRADE EVALUATION
 # ============================================================
 
 def evaluate_historical_trade(
     candles,
-    signal_idx,
+    idx,
     signal,
 ):
-
-    if signal_idx >= len(candles):
+    if idx >= len(candles) - 1:
         return None
 
-    cur = candles[signal_idx]
+    setup = candles[idx]
 
-    entry = float(cur["close"])
+    entry = float(setup["close"])
 
-    # Historical SL = same structural principle
-    if signal["type"] == "B":
-
-        sl = min(
-            float(cur["low"]),
-            float(candles[signal_idx - 1]["low"]),
-            float(candles[signal_idx - 2]["low"])
-        )
+    if signal == "BUY":
+        sl = float(setup["low"])
 
         risk = entry - sl
 
         if risk <= 0:
             return None
 
-        tp_a = entry + (
-            CONFIG["A_TP_R"] * risk
-        )
+        tp = entry + risk * CONFIG["A_TP_R"]
+
+        for j in range(idx + 1, len(candles)):
+            c = candles[j]
+
+            h = float(c["high"])
+            l = float(c["low"])
+
+            hit_sl = l <= sl
+            hit_tp = h >= tp
+
+            # Conservative:
+            # if both occur in same candle -> SL first.
+            if hit_sl and hit_tp:
+                return -1.0
+
+            if hit_sl:
+                return -1.0
+
+            if hit_tp:
+                return CONFIG["A_TP_R"]
 
     else:
-
-        sl = max(
-            float(cur["high"]),
-            float(candles[signal_idx - 1]["high"]),
-            float(candles[signal_idx - 2]["high"])
-        )
+        sl = float(setup["high"])
 
         risk = sl - entry
 
         if risk <= 0:
             return None
 
-        tp_a = entry - (
-            CONFIG["A_TP_R"] * risk
-        )
+        tp = entry - risk * CONFIG["A_TP_R"]
 
-    # Need enough future candles
-    end = min(
-        len(candles),
-        signal_idx + 1000
-    )
+        for j in range(idx + 1, len(candles)):
+            c = candles[j]
 
-    be_reached = False
-    max_reached_r = 0.0
+            h = float(c["high"])
+            l = float(c["low"])
 
-    # We use candle-level simulation.
-    #
-    # If both SL and TP are inside the same candle,
-    # conservative ordering = SL first.
-    #
-    # This avoids artificially inflating historical results.
-    for j in range(
-        signal_idx + 1,
-        end
-    ):
+            hit_sl = h >= sl
+            hit_tp = l <= tp
 
-        c = candles[j]
-
-        high = float(c["high"])
-        low = float(c["low"])
-
-        if signal["type"] == "B":
-
-            max_r = (
-                high - entry
-            ) / risk
-
-            max_reached_r = max(
-                max_reached_r,
-                max_r
-            )
-
-            # Stop first
-            if low <= sl:
+            if hit_sl and hit_tp:
                 return -1.0
 
-            # A TP
-            if high >= tp_a:
-                return CONFIG["A_TP_R"]
-
-            if max_r >= CONFIG["MAX_TRAIL_R"]:
-                return CONFIG["MAX_TRAIL_R"]
-
-            if max_r >= CONFIG["BE_AT_R"]:
-                be_reached = True
-
-            if be_reached:
-
-                steps = int(
-                    max_r /
-                    CONFIG["TRAIL_STEP_R"]
-                )
-
-                lock_r = (
-                    steps - 1
-                ) * CONFIG["TRAIL_STEP_R"]
-
-                if lock_r > 0:
-
-                    trail_sl = (
-                        entry +
-                        lock_r * risk
-                    )
-
-                    if low <= trail_sl:
-                        return lock_r
-
-        else:
-
-            max_r = (
-                entry - low
-            ) / risk
-
-            max_reached_r = max(
-                max_reached_r,
-                max_r
-            )
-
-            if high >= sl:
+            if hit_sl:
                 return -1.0
 
-            if low <= tp_a:
+            if hit_tp:
                 return CONFIG["A_TP_R"]
 
-            if max_r >= CONFIG["MAX_TRAIL_R"]:
-                return CONFIG["MAX_TRAIL_R"]
-
-            if max_r >= CONFIG["BE_AT_R"]:
-                be_reached = True
-
-            if be_reached:
-
-                steps = int(
-                    max_r /
-                    CONFIG["TRAIL_STEP_R"]
-                )
-
-                lock_r = (
-                    steps - 1
-                ) * CONFIG["TRAIL_STEP_R"]
-
-                if lock_r > 0:
-
-                    trail_sl = (
-                        entry -
-                        lock_r * risk
-                    )
-
-                    if high >= trail_sl:
-                        return lock_r
-
-    return max_reached_r if max_reached_r > 0 else -1.0
+    return 0.0
 
 
 # ============================================================
@@ -928,433 +760,450 @@ def evaluate_historical_trade(
 # ============================================================
 
 class HistoricalDB:
+    def __init__(self):
+        self.rows = {}
 
-    def __init__(self, symbol, interval):
-
-        self.symbol = symbol
-
-        # ====================================================
-        # ADDITION 1:
-        # DB is independent for every symbol + timeframe.
-        # ====================================================
-        self.interval = interval
-
-        self.rows = []
-
-        self.time_stats = {}
-
-        self.ready = False
-
-        self.loaded_from = None
-        self.loaded_to = None
-
-    # --------------------------------------------------------
-
-    def time_bucket(self, timestamp):
-
-        dt = datetime.fromtimestamp(
-            timestamp,
-            timezone.utc
+    def key(self, symbol, interval):
+        return (
+            normalize_symbol(symbol),
+            interval
         )
 
-        minute = (
-            dt.hour * 60 +
-            dt.minute
-        )
+    def build_time_stats(self, symbol, interval):
+        key = self.key(symbol, interval)
 
-        bucket = (
-            minute //
-            CONFIG["TIME_BUCKET_MINUTES"]
-        )
+        rows = self.rows.get(key, [])
 
-        return bucket
+        buckets = {}
 
-    # --------------------------------------------------------
+        for row in rows:
+            bucket = row.get("time_bucket")
 
-    def build_time_stats(self):
-
-        groups = {}
-
-        for row in self.rows:
-
-            bucket = row["time_bucket"]
-
-            if bucket not in groups:
-                groups[bucket] = []
-
-            groups[bucket].append(
-                row["r"]
-            )
-
-        self.time_stats = {}
-
-        for bucket, results in groups.items():
-
-            if not results:
+            if bucket is None:
                 continue
 
-            good = sum(
-                1
-                for r in results
-                if r > 0
-            )
+            buckets.setdefault(
+                bucket,
+                []
+            ).append(row)
 
-            avg_r = (
-                sum(results) /
-                len(results)
-            )
+        for row in rows:
+            bucket = row.get("time_bucket")
 
-            self.time_stats[bucket] = {
-                "count": len(results),
-                "good": good,
-                "good_pct": good / len(results),
-                "avg_r": avg_r,
-            }
+            if bucket not in buckets:
+                continue
 
-    # --------------------------------------------------------
+            group = buckets[bucket]
+
+            results = [
+                x["result"]
+                for x in group
+                if x.get("result") is not None
+            ]
+
+            if len(results) < CONFIG["TIME_MIN_SAMPLES"]:
+                row["time_good_pct"] = None
+            else:
+                good = sum(
+                    1 for x in results
+                    if x > 0
+                )
+
+                row["time_good_pct"] = (
+                    good / len(results)
+                )
 
     def add(
         self,
+        symbol,
+        interval,
         features,
-        result_r
+        result,
+        timestamp,
     ):
+        if features is None:
+            return
 
-        row = dict(features)
-
-        row["r"] = result_r
-
-        row["good"] = (
-            result_r > 0
+        dt = pd.to_datetime(
+            timestamp,
+            utc=True,
+            errors="coerce"
         )
 
-        row["time_bucket"] = (
-            self.time_bucket(
-                features["time"]
-            )
+        if pd.isna(dt):
+            return
+
+        minutes = (
+            dt.hour * 60
+            + dt.minute
         )
 
-        self.rows.append(row)
+        bucket_size = CONFIG[
+            "TIME_BUCKET_MINUTES"
+        ]
 
-    # --------------------------------------------------------
+        bucket = (
+            minutes // bucket_size
+        ) * bucket_size
+
+        row = {
+            "features": features,
+            "result": result,
+            "time_bucket": bucket,
+            "timestamp": dt,
+        }
+
+        key = self.key(symbol, interval)
+
+        self.rows.setdefault(
+            key,
+            []
+        ).append(row)
 
     def similar(
         self,
-        current_features
+        symbol,
+        interval,
+        features,
     ):
+        key = self.key(symbol, interval)
+
+        rows = self.rows.get(key, [])
 
         candidates = []
 
-        # Newest historical records first
-        # because recent market behavior
-        # should have priority when distance
-        # is similar.
-        source = self.rows[
-            -CONFIG["MAX_HISTORY_CANDIDATES"]:
-        ]
+        for row in rows:
+            if row.get("features") is None:
+                continue
 
-        for row in source:
+            if (
+                row["features"].get("signal")
+                != features.get("signal")
+            ):
+                continue
 
             d = feature_distance(
-                current_features,
-                row
+                features,
+                row["features"]
             )
 
-            candidates.append(
-                (d, row)
-            )
+            if d <= 10:
+                candidates.append(
+                    (
+                        d,
+                        row
+                    )
+                )
 
         candidates.sort(
             key=lambda x: x[0]
         )
 
-        # Dynamic tolerance:
-        # take sufficiently similar setups.
-        #
-        # We don't force an arbitrary fixed
-        # number if they are not actually similar.
-        selected = []
-
-        for distance, row in candidates:
-
-            if distance <= 1.0:
-
-                selected.append(
-                    (distance, row)
-                )
-
-            if len(selected) >= 200:
-                break
-
-        return selected
-
-    # --------------------------------------------------------
+        return [
+            x[1]
+            for x in candidates[
+                :CONFIG["MAX_HISTORY_CANDIDATES"]
+            ]
+        ]
 
     def evaluate(
         self,
-        current_features
+        symbol,
+        interval,
+        features,
     ):
-
-        matches = self.similar(
-            current_features
+        candidates = self.similar(
+            symbol,
+            interval,
+            features
         )
 
-        count = len(matches)
-
-        if count < CONFIG["MIN_SIMILAR"]:
-
+        if len(candidates) < CONFIG["MIN_SIMILAR"]:
             return {
-                "allow": False,
-                "reason": "SIMILAR_TOO_FEW",
-                "count": count,
+                "ok": False,
+                "reason": (
+                    f"similar={len(candidates)} "
+                    f"< {CONFIG['MIN_SIMILAR']}"
+                ),
+                "count": len(candidates),
                 "good_pct": 0.0,
-                "avg_r": 0.0,
-                "time_ok": False,
             }
 
         results = [
-            row["r"]
-            for _, row in matches
+            x["result"]
+            for x in candidates
+            if x.get("result") is not None
         ]
 
+        if not results:
+            return {
+                "ok": False,
+                "reason": "no historical results",
+                "count": 0,
+                "good_pct": 0.0,
+            }
+
         good = sum(
-            1
-            for r in results
-            if r > 0
+            1 for x in results
+            if x > 0
         )
 
         good_pct = (
-            good / count
+            good / len(results)
         )
 
-        avg_r = (
-            sum(results) /
-            count
+        # Time filter
+        current_time = features.get(
+            "timestamp"
         )
 
-        bucket = self.time_bucket(
-            current_features["time"]
-        )
+        if current_time is not None:
+            bucket = (
+                pd.to_datetime(
+                    current_time,
+                    utc=True
+                ).hour * 60
+                + pd.to_datetime(
+                    current_time,
+                    utc=True
+                ).minute
+            )
 
-        time_stat = self.time_stats.get(
-            bucket
-        )
+            bucket = (
+                bucket
+                // CONFIG["TIME_BUCKET_MINUTES"]
+            ) * CONFIG["TIME_BUCKET_MINUTES"]
 
-        time_ok = True
+            time_rows = [
+                x for x in self.rows.get(
+                    self.key(symbol, interval),
+                    []
+                )
+                if x.get("time_bucket") == bucket
+            ]
 
-        if time_stat:
-
-            if (
-                time_stat["count"] >=
-                CONFIG["TIME_MIN_SAMPLES"]
-            ):
-
-                time_ok = (
-                    time_stat["good_pct"] >=
-                    CONFIG["TIME_MIN_GOOD_PCT"]
-                    and
-                    time_stat["avg_r"] > 0
+            if len(time_rows) >= CONFIG[
+                "TIME_MIN_SAMPLES"
+            ]:
+                time_good = sum(
+                    1
+                    for x in time_rows
+                    if x.get("result", 0) > 0
                 )
 
-        allow = (
-            good_pct >=
-            CONFIG["SIMILAR_GOOD_PCT"]
-            and
-            avg_r > 0
-            and
-            time_ok
+                time_good_pct = (
+                    time_good / len(time_rows)
+                )
+
+                if (
+                    time_good_pct
+                    < CONFIG["TIME_MIN_GOOD_PCT"]
+                ):
+                    return {
+                        "ok": False,
+                        "reason": (
+                            f"time filter "
+                            f"{time_good_pct:.2%}"
+                        ),
+                        "count": len(results),
+                        "good_pct": good_pct,
+                    }
+
+        ok = (
+            good_pct
+            >= CONFIG["SIMILAR_GOOD_PCT"]
         )
 
         return {
-            "allow": allow,
+            "ok": ok,
             "reason": (
-                "PASS"
-                if allow
-                else "HISTORY_FILTER"
+                "passed"
+                if ok
+                else f"good={good_pct:.2%}"
             ),
-            "count": count,
+            "count": len(results),
             "good_pct": good_pct,
-            "avg_r": avg_r,
-            "time_ok": time_ok,
-            "time_stat": time_stat,
-            "matches": matches[:20],
         }
 
 
 # ============================================================
-# HISTORICAL DOWNLOAD
+# DATA CONVERSION
 # ============================================================
 
-async def download_6m_history(
-    client,
-    symbol,
-    interval
-):
-
-    now_ms = int(
-        time.time() * 1000
-    )
-
-    start_dt = (
-        datetime.now(timezone.utc)
-        -
-        timedelta(
-            days=30 *
-            CONFIG["HISTORY_MONTHS"]
-        )
-    )
-
-    start_ms = int(
-        start_dt.timestamp() * 1000
-    )
-
-    end_ms = now_ms
-
-    all_klines = []
-
-    cursor = start_ms
-
-    log.info(
-        f"📚 {symbol} [{interval}]: "
-        f"{CONFIG['HISTORY_MONTHS']} oy history "
-        f"yuklanmoqda..."
-    )
-
-    while cursor < end_ms:
-
-        try:
-
-            klines = await client.get_klines(
-                symbol=symbol,
-                interval=interval,
-                startTime=cursor,
-                endTime=end_ms,
-                limit=CONFIG["HISTORY_LIMIT"]
-            )
-
-        except Exception as e:
-
-            log.error(
-                f"{symbol} [{interval}]: "
-                f"history request xato: {e}"
-            )
-
-            await asyncio.sleep(2)
-
-            continue
-
-        if not klines:
-            break
-
-        all_klines.extend(
-            klines
-        )
-
-        last_open_time = int(
-            klines[-1][0]
-        )
-
-        next_cursor = (
-            last_open_time +
-            1
-        )
-
-        if next_cursor <= cursor:
-            break
-
-        cursor = next_cursor
-
-        if len(all_klines) % 10000 == 0:
-
-            log.info(
-                f"📚 {symbol} [{interval}]: "
-                f"{len(all_klines)} candle..."
-            )
-
-        # Binance rate safety
-        await asyncio.sleep(
-            0.08
-        )
-
+def td_values_to_candles(values):
     candles = []
 
-    for k in all_klines:
+    for row in values or []:
+        try:
+            dt = pd.to_datetime(
+                row["datetime"],
+                utc=True
+            )
 
-        candles.append({
-            "time": int(k[0] // 1000),
-            "open": float(k[1]),
-            "high": float(k[2]),
-            "low": float(k[3]),
-            "close": float(k[4]),
-            "closed": True,
-        })
+            candles.append({
+                "timestamp": dt.to_pydatetime(),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(
+                    row.get("volume", 0) or 0
+                ),
+                "closed": True,
+            })
 
-    # Deduplicate
-    unique = {}
+        except Exception:
+            continue
 
-    for c in candles:
-        unique[c["time"]] = c
-
-    candles = sorted(
-        unique.values(),
-        key=lambda x: x["time"]
-    )
-
-    log.info(
-        f"📚 {symbol} [{interval}]: "
-        f"{len(candles)} ta history candle tayyor"
+    candles.sort(
+        key=lambda x: x["timestamp"]
     )
 
     return candles
 
 
 # ============================================================
-# BUILD HISTORICAL DATABASE
+# 6 MONTH HISTORY
+# ============================================================
+
+async def download_6m_history(
+    client,
+    symbol,
+    interval,
+):
+    symbol = normalize_symbol(symbol)
+
+    end_dt = datetime.now(
+        timezone.utc
+    )
+
+    start_dt = (
+        end_dt
+        - timedelta(
+            days=30 * CONFIG["HISTORY_MONTHS"]
+        )
+    )
+
+    all_rows = []
+
+    current_end = end_dt
+
+    step = timedelta(
+        seconds=interval_seconds(interval)
+    )
+
+    max_loops = 200
+
+    for _ in range(max_loops):
+        if current_end <= start_dt:
+            break
+
+        try:
+            data = await client.time_series(
+                symbol=symbol,
+                interval=interval,
+                outputsize=5000,
+                start_date=start_dt.isoformat(),
+                end_date=current_end.isoformat(),
+            )
+
+        except Exception as e:
+            log.error(
+                "History error %s %s: %s",
+                symbol,
+                interval,
+                e,
+            )
+            break
+
+        values = data.get("values", [])
+
+        if not values:
+            break
+
+        batch = td_values_to_candles(values)
+
+        if not batch:
+            break
+
+        all_rows.extend(batch)
+
+        earliest = min(
+            x["timestamp"]
+            for x in batch
+        )
+
+        if earliest <= start_dt:
+            break
+
+        new_end = (
+            earliest - step
+        )
+
+        if new_end >= current_end:
+            break
+
+        current_end = new_end
+
+        log.info(
+            "History %s %s: %d candles",
+            symbol,
+            interval,
+            len(all_rows)
+        )
+
+        await asyncio.sleep(0.15)
+
+    unique = {}
+
+    for c in all_rows:
+        unique[
+            c["timestamp"].isoformat()
+        ] = c
+
+    candles = list(
+        unique.values()
+    )
+
+    candles.sort(
+        key=lambda x: x["timestamp"]
+    )
+
+    return candles
+
+
+# ============================================================
+# BUILD HISTORY DB
 # ============================================================
 
 async def build_history_db(
     client,
+    db,
     symbol,
-    interval
+    interval,
 ):
-
     candles = await download_6m_history(
         client,
         symbol,
         interval
     )
 
-    db = HistoricalDB(
-        symbol,
-        interval
-    )
-
-    if len(candles) < 1000:
-
+    if len(candles) < 30:
         log.warning(
-            f"{symbol} [{interval}]: "
-            f"history juda kam"
+            "Not enough history %s %s: %d",
+            symbol,
+            interval,
+            len(candles)
         )
 
-        return db
+        return candles
 
-    log.info(
-        f"🧠 {symbol} [{interval}]: "
-        f"historical setup'lar hisoblanmoqda..."
-    )
-
-    total = 0
-
-    # We cannot use setups near the very end
-    # because their future outcome is unknown.
-    last_train_idx = (
-        len(candles) - 200
-    )
+    added = 0
 
     for idx in range(
-        10,
-        last_train_idx
+        CONFIG["HISTORY_LOOKBACK_CANDLES"],
+        len(candles) - 1
     ):
-
         signal = detect_engulfing(
             candles,
             idx
@@ -1372,45 +1221,43 @@ async def build_history_db(
         if not features:
             continue
 
-        result_r = evaluate_historical_trade(
+        features["timestamp"] = candles[
+            idx
+        ]["timestamp"]
+
+        result = evaluate_historical_trade(
             candles,
             idx,
             signal
         )
 
-        if result_r is None:
+        if result is None:
             continue
 
         db.add(
+            symbol,
+            interval,
             features,
-            result_r
+            result,
+            candles[idx]["timestamp"]
         )
 
-        total += 1
+        added += 1
 
-        if total % 5000 == 0:
-
-            log.info(
-                f"🧠 {symbol} [{interval}]: "
-                f"{total} setup..."
-            )
-
-    db.build_time_stats()
-
-    db.ready = True
-
-    if candles:
-
-        db.loaded_from = candles[0]["time"]
-        db.loaded_to = candles[-1]["time"]
-
-    log.info(
-        f"✅ {symbol} [{interval}]: "
-        f"{len(db.rows)} historical setup "
-        f"tayyor"
+    db.build_time_stats(
+        symbol,
+        interval
     )
 
-    return db
+    log.info(
+        "History DB %s %s: candles=%d setups=%d",
+        symbol,
+        interval,
+        len(candles),
+        added
+    )
+
+    return candles
 
 
 # ============================================================
@@ -1419,232 +1266,98 @@ async def build_history_db(
 
 def make_chart(
     candles,
-    trades,
     symbol,
     interval,
-    suffix="",
-    open_positions=None
+    entry=None,
+    exit_price=None,
+    signal=None,
 ):
-
-    try:
-
-        if not candles:
-            return None
-
-        df = pd.DataFrame(
-            candles[
-                -CONFIG["CHART_CANDLES"]:
-            ]
-        )
-
-        df["time"] = pd.to_datetime(
-            df["time"],
-            unit="s"
-        )
-
-        df = df.set_index(
-            "time"
-        )
-
-        fig, ax = plt.subplots(
-            figsize=(12, 6),
-            facecolor="#0a0b0f"
-        )
-
-        ax.set_facecolor(
-            "#0a0b0f"
-        )
-
-        for i, (
-            idx,
-            row
-        ) in enumerate(
-            df.iterrows()
-        ):
-
-            c = (
-                "#10b981"
-                if row["close"] >= row["open"]
-                else "#ef4444"
-            )
-
-            ax.plot(
-                [i, i],
-                [row["low"], row["high"]],
-                color=c,
-                linewidth=1
-            )
-
-            ax.plot(
-                [i, i],
-                [row["open"], row["close"]],
-                color=c,
-                linewidth=4
-            )
-
-        index_list = list(
-            df.index
-        )
-
-        def mark(
-            t,
-            price,
-            side,
-            text
-        ):
-
-            try:
-
-                tt = datetime.utcfromtimestamp(
-                    t
-                )
-
-                if tt not in index_list:
-                    return
-
-                i = index_list.index(
-                    tt
-                )
-
-                buy = side == "B"
-
-                color = (
-                    "#10b981"
-                    if buy
-                    else "#ef4444"
-                )
-
-                marker = (
-                    "^"
-                    if buy
-                    else "v"
-                )
-
-                ax.scatter(
-                    i,
-                    price,
-                    color=color,
-                    marker=marker,
-                    s=150,
-                    zorder=6,
-                    edgecolors="white",
-                    linewidths=0.5
-                )
-
-                ax.annotate(
-                    text,
-                    xy=(i, price),
-                    xytext=(
-                        i,
-                        price
-                        -
-                        (
-                            df["high"].max()
-                            -
-                            df["low"].min()
-                        ) * 0.02
-                        if buy
-                        else
-                        price
-                        +
-                        (
-                            df["high"].max()
-                            -
-                            df["low"].min()
-                        ) * 0.02
-                    ),
-                    color=color,
-                    fontsize=8,
-                    fontweight="bold",
-                    ha="center"
-                )
-
-            except Exception:
-                pass
-
-        # ----------------------------------------------------
-        # OPEN / ENTRY MARKERS
-        # ----------------------------------------------------
-
-        for t in trades[-30:]:
-
-            mark(
-                t["time"],
-                t["entry"],
-                t["type"],
-                f"{t.get('part','')}"
-            )
-
-        # ----------------------------------------------------
-        # ADDITION 2:
-        # CLOSED TRADE EXIT MARKER
-        # ----------------------------------------------------
-
-        for t in trades[-30:]:
-
-            if (
-                t.get("exit") is not None
-                and
-                t.get("exit_time") is not None
-            ):
-
-                mark(
-                    t["exit_time"],
-                    t["exit"],
-                    t["type"],
-                    f"{t.get('part','')} EXIT"
-                )
-
-        if open_positions:
-
-            for p in open_positions:
-
-                mark(
-                    p["time"],
-                    p["entry"],
-                    p["type"],
-                    f"{p.get('part','')} OPEN"
-                )
-
-        ax.set_title(
-            f"{symbol} · {interval} {suffix}",
-            color="#e2e8f0",
-            fontsize=14
-        )
-
-        ax.tick_params(
-            colors="#94a3b8"
-        )
-
-        ax.grid(
-            True,
-            alpha=0.1
-        )
-
-        plt.tight_layout()
-
-        buf = io.BytesIO()
-
-        plt.savefig(
-            buf,
-            format="png",
-            dpi=80,
-            facecolor="#0a0b0f"
-        )
-
-        plt.close(fig)
-
-        buf.seek(0)
-
-        return buf
-
-    except Exception as e:
-
-        log.error(
-            f"chart: {e}"
-        )
-
+    if not candles:
         return None
+
+    data = candles[
+        -CONFIG["CHART_CANDLES"]:
+    ]
+
+    fig, ax = plt.subplots(
+        figsize=(12, 6)
+    )
+
+    width = 0.6
+
+    for i, c in enumerate(data):
+        o = float(c["open"])
+        h = float(c["high"])
+        l = float(c["low"])
+        cl = float(c["close"])
+
+        ax.plot(
+            [i, i],
+            [l, h],
+            linewidth=1
+        )
+
+        if cl >= o:
+            bottom = o
+            height = cl - o
+        else:
+            bottom = cl
+            height = o - cl
+
+        rect = plt.Rectangle(
+            (
+                i - width / 2,
+                bottom
+            ),
+            width,
+            max(height, 1e-12),
+            fill=False
+        )
+
+        ax.add_patch(rect)
+
+    if entry is not None:
+        ax.axhline(
+            entry,
+            linestyle="--",
+            linewidth=1,
+            label="Entry"
+        )
+
+    if exit_price is not None:
+        ax.axhline(
+            exit_price,
+            linestyle=":",
+            linewidth=1,
+            label="Exit"
+        )
+
+    ax.set_title(
+        f"{symbol} | {interval} | {signal or ''}"
+    )
+
+    ax.grid(
+        True,
+        alpha=0.2
+    )
+
+    ax.legend()
+
+    buf = io.BytesIO()
+
+    plt.tight_layout()
+
+    fig.savefig(
+        buf,
+        format="png",
+        dpi=150
+    )
+
+    plt.close(fig)
+
+    buf.seek(0)
+
+    return buf.getvalue()
 
 
 # ============================================================
@@ -1657,27 +1370,18 @@ class Engine:
         self,
         symbol,
         interval,
-        history_db
+        history_db,
     ):
-
-        self.symbol = symbol
-
-        # ====================================================
-        # ADDITION 1:
-        # Every Engine is independent by symbol + timeframe.
-        # ====================================================
+        self.symbol = normalize_symbol(
+            symbol
+        )
 
         self.interval = interval
 
         self.db = history_db
 
-        self.balance = (
-            CONFIG["BALANCE"]
-        )
-
-        self.initial = (
-            CONFIG["BALANCE"]
-        )
+        self.balance = CONFIG["BALANCE"]
+        self.start_balance = self.balance
 
         self.positions = []
 
@@ -1685,111 +1389,104 @@ class Engine:
 
         self.trades = []
 
-        self.completedTrades = 0
-
-        self.wins = 0
-        self.losses = 0
-        self.bes = 0
-
-        self.total_comm = 0.0
-
-        self.gross_pnl = 0.0
-
-        self.tp1_hits = 0
-
-        self.trail_steps = 0
-
-        self.trail_caps = 0
-
-        self.rt_entries = 0
-
-        self.rt_confirmed = 0
-
-        self.rt_rejected = 0
-
-        self.history_pass = 0
-
-        self.history_block = 0
-
-        self.history_insufficient = 0
-
-        self.time_block = 0
-
-        self.consecutive_losses = {
-            "B": 0,
-            "S": 0,
-        }
-
-        self.blocked_direction = {
-            "B": False,
-            "S": False,
-        }
-
-        self.last_signal_time = None
-
-        self.last_trigger_candle = None
-
-        self.pending_signal = None
-
-        self.day_start_balance = (
-            self.balance
-        )
-
-        self.day_key = None
-
-        self.trading_paused = False
-
-        self.last_candle_time = None
-
-        self.stats_2c = {
+        self.stats = {
             "wins": 0,
             "losses": 0,
-            "net": 0.0,
+            "signals": 0,
+            "blocked": 0,
         }
 
+        self.total_comm = 0.0
+        self.gross_pnl = 0.0
+
+        self.consecutive_losses = 0
+
+        self.self_blocked = False
+
+        self.day_start_balance = self.balance
+        self.day = datetime.now(
+            timezone.utc
+        ).date()
+
+        self.last_candle_time = time.time()
+
+        self.pending = {}
+
+        self.last_report = None
+
     # --------------------------------------------------------
-    # RISK
+
+    def reset_day(self):
+        today = datetime.now(
+            timezone.utc
+        ).date()
+
+        if today != self.day:
+            self.day = today
+            self.day_start_balance = self.balance
+
+            self.consecutive_losses = 0
+            self.self_blocked = False
+
+    # --------------------------------------------------------
+
+    def daily_loss_limit_hit(self):
+        loss = (
+            self.day_start_balance
+            - self.balance
+        )
+
+        limit = (
+            self.day_start_balance
+            * CONFIG["MAX_DAILY_LOSS_PCT"]
+        )
+
+        return loss >= limit
+
+    # --------------------------------------------------------
+
+    def can_trade(self):
+        self.reset_day()
+
+        if self.self_blocked:
+            return False
+
+        if self.daily_loss_limit_hit():
+            return False
+
+        if (
+            len(self.positions)
+            >= CONFIG["MAX_OPEN_POS"]
+        ):
+            return False
+
+        return True
+
     # --------------------------------------------------------
 
     def calc_lot(
         self,
-        sl_dist,
-        price,
-        part_risk_ratio
+        entry,
+        sl,
+        part_risk_ratio=1.0,
     ):
-
-        if (
-            sl_dist <= 0
-            or price <= 0
-        ):
-            return 0.0
-
-        # TOTAL signal risk = 2%
-        # A/B each 1%
         risk_money = (
             self.balance
-            *
-            CONFIG["RISK_PCT"]
-            *
-            part_risk_ratio
+            * CONFIG["RISK_PCT"]
+            * part_risk_ratio
         )
+
+        sl_dist = abs(
+            entry - sl
+        )
+
+        if sl_dist <= 0:
+            return 0.0
 
         lot = (
-            risk_money /
-            sl_dist
+            risk_money
+            / sl_dist
         )
-
-        if (
-            lot * sl_dist
-            <
-            CONFIG["MIN_RISK_USD"]
-        ):
-
-            lot = (
-                CONFIG["MIN_RISK_USD"]
-                /
-                sl_dist
-            )
 
         lot = max(
             CONFIG["LOT_MIN"],
@@ -1799,2055 +1496,1224 @@ class Engine:
             )
         )
 
-        max_lot = (
-            self.balance *
-            0.95 /
-            price
-        )
+        return lot
 
-        lot = min(
-            lot,
-            max_lot
-        )
-
-        return round(
-            lot,
-            6
-        )
-
-    # --------------------------------------------------------
-    # DAY RESET
-    # --------------------------------------------------------
-
-    def check_day_reset(self):
-
-        today = (
-            datetime.now(timezone.utc)
-            .strftime("%Y-%m-%d")
-        )
-
-        if self.day_key != today:
-
-            self.day_key = today
-
-            self.day_start_balance = (
-                self.balance
-            )
-
-            self.trading_paused = False
-
-    # --------------------------------------------------------
-    # SELF BLOCK
-    # --------------------------------------------------------
-
-    def is_blocked(
-        self,
-        direction
-    ):
-
-        return self.blocked_direction.get(
-            direction,
-            False
-        )
-
-    def register_result(
-        self,
-        direction,
-        net_pnl
-    ):
-
-        if net_pnl < 0:
-
-            self.consecutive_losses[
-                direction
-            ] += 1
-
-        else:
-
-            # A non-loss breaks the streak
-            self.consecutive_losses[
-                direction
-            ] = 0
-
-        if (
-            self.consecutive_losses[
-                direction
-            ]
-            >=
-            CONFIG["MAX_CONSECUTIVE_LOSSES"]
-        ):
-
-            self.blocked_direction[
-                direction
-            ] = True
-
-    def reset_block_if_structure_changed(
-        self,
-        signal,
-        candles=None
-    ):
-
-        # ====================================================
-        # ADDITION 3:
-        # Structure can now be checked against
-        # the current LIVE candle.
-        # ====================================================
-
-        source_candles = (
-            candles
-            if candles is not None
-            else self.candles
-        )
-
-        if len(source_candles) < 10:
-            return
-
-        sf = structure_features(
-            source_candles[-10:]
-        )
-
-        if (
-            signal["type"] == "B"
-            and
-            sf["trend"] < -0.50
-        ):
-
-            self.blocked_direction[
-                "B"
-            ] = False
-
-            self.consecutive_losses[
-                "B"
-            ] = 0
-
-        elif (
-            signal["type"] == "S"
-            and
-            sf["trend"] > 0.50
-        ):
-
-            self.blocked_direction[
-                "S"
-            ] = False
-
-            self.consecutive_losses[
-                "S"
-            ] = 0
-
-    # --------------------------------------------------------
-    # OPEN LOCAL
     # --------------------------------------------------------
 
     def open_local(
         self,
         signal,
-        candle,
-        part,
-        entry_price=None
+        entry,
+        sl,
     ):
-
-        entry = (
-            float(entry_price)
-            if entry_price is not None
-            else float(candle["close"])
-        )
-
-        # Structural SL
-        if signal["type"] == "B":
-
-            base_sl = min(
-                float(candle["low"]),
-                float(
-                    self.candles[-2]["low"]
-                ) if len(self.candles) >= 2
-                else float(candle["low"])
-            )
-
-            # Small buffer
-            buf = (
-                CONFIG["SL_BUF"]
-                *
-                (
-                    entry /
-                    100000
-                )
-            )
-
-            sl = base_sl - buf
-
-            sl_dist = (
-                entry - sl
-            )
-
+        if signal == "BUY":
+            risk = entry - sl
         else:
+            risk = sl - entry
 
-            base_sl = max(
-                float(candle["high"]),
-                float(
-                    self.candles[-2]["high"]
-                ) if len(self.candles) >= 2
-                else float(candle["high"])
-            )
-
-            buf = (
-                CONFIG["SL_BUF"]
-                *
-                (
-                    entry /
-                    100000
-                )
-            )
-
-            sl = base_sl + buf
-
-            sl_dist = (
-                sl - entry
-            )
-
-        if sl_dist <= 0:
+        if risk <= 0:
             return None
 
-        # A/B = 50/50 of total risk
-        lot = self.calc_lot(
-            sl_dist,
+        lot_a = self.calc_lot(
             entry,
+            sl,
             CONFIG["PART_RISK_RATIO"]
         )
 
-        if lot <= 0:
+        lot_b = self.calc_lot(
+            entry,
+            sl,
+            CONFIG["PART_RISK_RATIO"]
+        )
+
+        if lot_a <= 0:
             return None
 
-        return {
-            "time": int(candle["time"]),
+        p = {
+            "id": (
+                f"{self.symbol}-"
+                f"{self.interval}-"
+                f"{int(time.time()*1000)}"
+            ),
 
-            "type": signal["type"],
+            "symbol": self.symbol,
+            "interval": self.interval,
 
-            "engulfCandles": signal[
-                "candles"
-            ],
+            "signal": signal,
 
             "entry": entry,
-
             "sl": sl,
 
-            "initialSL": sl,
+            "initial_sl": sl,
+            "risk": risk,
 
-            "slDist": sl_dist,
+            "lot": lot_a + lot_b,
 
-            "lot": lot,
+            "lot_a": lot_a,
+            "lot_b": lot_b,
 
-            "riskPerR": (
-                lot *
-                sl_dist
+            "tp_a": (
+                entry + risk * CONFIG["A_TP_R"]
+                if signal == "BUY"
+                else entry - risk * CONFIG["A_TP_R"]
             ),
 
-            "balance_at_entry": (
-                self.balance
-            ),
+            "tp_b": None,
 
-            "beSet": False,
+            "a_closed": False,
 
-            "tp1Done": False,
-
-            "lockR": 0.0,
-
-            "gross": 0.0,
+            "b_sl": sl,
 
             "commission": 0.0,
 
-            "part": part,
+            "gross": 0.0,
 
-            "is_realtime": True,
+            "opened": datetime.now(
+                timezone.utc
+            ),
 
-            "history_count": 0,
-
-            "history_good_pct": 0.0,
-
-            "history_avg_r": 0.0,
-
-            "time_good_pct": 0.0,
+            "trail_r": 0.0,
         }
 
+        open_comm = (
+            p["lot"]
+            * p["entry"]
+            * CONFIG["COMM_RATE"]
+        )
+
+        p["commission"] += open_comm
+        self.total_comm += open_comm
+
+        self.positions.append(p)
+
+        return p
+
     # --------------------------------------------------------
-    # MANAGE
+
+    def close_signal(
+        self,
+        p,
+        exit_price,
+        reason,
+        fraction=1.0,
+    ):
+        if p not in self.positions:
+            return
+
+        lot = (
+            p["lot"]
+            * fraction
+        )
+
+        if p["signal"] == "BUY":
+            gross = (
+                exit_price
+                - p["entry"]
+            ) * lot
+        else:
+            gross = (
+                p["entry"]
+                - exit_price
+            ) * lot
+
+        close_comm = (
+            lot
+            * exit_price
+            * CONFIG["COMM_RATE"]
+        )
+
+        p["commission"] += close_comm
+        self.total_comm += close_comm
+
+        net_pnl = (
+            gross
+            - close_comm
+        )
+
+        self.balance += net_pnl
+        self.gross_pnl += gross
+
+        p["gross"] += gross
+
+        self.trades.append({
+            "time": datetime.now(
+                timezone.utc
+            ),
+            "symbol": self.symbol,
+            "interval": self.interval,
+            "signal": p["signal"],
+            "entry": p["entry"],
+            "exit": exit_price,
+            "pnl": net_pnl,
+            "reason": reason,
+        })
+
+        if net_pnl > 0:
+            self.stats["wins"] += 1
+            self.consecutive_losses = 0
+        elif net_pnl < 0:
+            self.stats["losses"] += 1
+            self.consecutive_losses += 1
+
+        if (
+            self.consecutive_losses
+            >= CONFIG["MAX_CONSECUTIVE_LOSSES"]
+        ):
+            self.self_blocked = True
+
+            asyncio.create_task(
+                TG_CLIENT.send(
+                    f"🛑 <b>SELF BLOCK</b>\n"
+                    f"{self.symbol} {self.interval}\n"
+                    f"{CONFIG['MAX_CONSECUTIVE_LOSSES']} "
+                    f"consecutive losses."
+                )
+            )
+
+        try:
+            self.positions.remove(p)
+        except ValueError:
+            pass
+
+        return net_pnl
+
     # --------------------------------------------------------
 
     def manage_local(
         self,
         p,
-        candle
+        price,
     ):
+        if p not in self.positions:
+            return
 
-        sl_hit = False
+        signal = p["signal"]
 
-        exit_price = 0.0
+        entry = p["entry"]
+        risk = p["risk"]
 
-        exit_r = 0.0
+        if risk <= 0:
+            return
 
-        if p["type"] == "B":
+        if signal == "BUY":
 
+            r_now = (
+                price - entry
+            ) / risk
+
+            # A TP
             if (
-                float(candle["low"])
-                <=
-                p["sl"]
+                not p["a_closed"]
+                and price >= p["tp_a"]
             ):
+                old_lot = p["lot"]
 
-                sl_hit = True
-
-                exit_price = p["sl"]
-
-                exit_r = (
-                    exit_price -
-                    p["entry"]
-                ) / p["slDist"]
-
-        else:
-
-            if (
-                float(candle["high"])
-                >=
-                p["sl"]
-            ):
-
-                sl_hit = True
-
-                exit_price = p["sl"]
-
-                exit_r = (
-                    p["entry"] -
-                    exit_price
-                ) / p["slDist"]
-
-        # ----------------------------------------------------
-        # SL
-        # ----------------------------------------------------
-
-        if sl_hit:
-
-            p["exit"] = exit_price
-
-            p["exitR"] = exit_r
-
-            # =================================================
-            # ADDITION 2:
-            # Remember exact candle time for close chart.
-            # =================================================
-
-            p["exit_time"] = int(
-                candle["time"]
-            )
-
-            p["exit_candle"] = dict(
-                candle
-            )
-
-            if (
-                p["beSet"]
-                and
-                p.get("lockR", 0) == 0
-            ):
-
-                p["closeReason"] = "BE"
-
-            elif p.get("lockR", 0) > 0:
-
-                p["closeReason"] = (
-                    f"Trail "
-                    f"{p['lockR']:.1f}R"
-                )
-
-            else:
-
-                p["closeReason"] = "SL"
-
-            p["gross"] += (
-                exit_r *
-                p["riskPerR"]
-            )
-
-            return True
-
-        # ----------------------------------------------------
-        # MAX R
-        # ----------------------------------------------------
-
-        if p["type"] == "B":
-
-            max_r = (
-                float(candle["high"]) -
-                p["entry"]
-            ) / p["slDist"]
-
-        else:
-
-            max_r = (
-                p["entry"] -
-                float(candle["low"])
-            ) / p["slDist"]
-
-        # ----------------------------------------------------
-        # BE
-        # ----------------------------------------------------
-
-        if (
-            max_r >= CONFIG["BE_AT_R"]
-            and
-            not p["beSet"]
-        ):
-
-            p["sl"] = p["entry"]
-
-            p["beSet"] = True
-
-        # ----------------------------------------------------
-        # A
-        # ----------------------------------------------------
-
-        if p["part"] == "A":
-
-            if (
-                max_r >=
-                CONFIG["A_TP_R"]
-                and
-                not p["tp1Done"]
-            ):
-
-                if p["type"] == "B":
-
-                    exit_a = (
-                        p["entry"] +
-                        CONFIG["A_TP_R"] *
-                        p["slDist"]
+                if old_lot > 0:
+                    self.close_signal(
+                        p,
+                        p["tp_a"],
+                        "TP_A",
+                        fraction=(
+                            p["lot_a"]
+                            / old_lot
+                        )
                     )
 
-                else:
+                    p["a_closed"] = True
 
-                    exit_a = (
-                        p["entry"] -
-                        CONFIG["A_TP_R"] *
-                        p["slDist"]
-                    )
+                    if p in self.positions:
+                        p["lot"] -= p["lot_a"]
 
-                p["exit"] = exit_a
+                        p["lot_a"] = 0
 
-                p["exitR"] = (
-                    CONFIG["A_TP_R"]
-                )
+                        p["b_sl"] = entry
 
-                # =================================================
-                # ADDITION 2:
-                # Remember exact candle time for close chart.
-                # =================================================
-
-                p["exit_time"] = int(
-                    candle["time"]
-                )
-
-                p["exit_candle"] = dict(
-                    candle
-                )
-
-                p["closeReason"] = (
-                    "TP1_A_2R"
-                )
-
-                p["gross"] += (
-                    CONFIG["A_TP_R"]
-                    *
-                    p["riskPerR"]
-                )
-
-                p["tp1Done"] = True
-
-                self.tp1_hits += 1
-
-                return True
-
-            return False
-
-        # ----------------------------------------------------
-        # B
-        # ----------------------------------------------------
-
-        if p["part"] == "B":
-
+            # BE
             if (
-                max_r >=
-                CONFIG["MAX_TRAIL_R"]
+                p in self.positions
+                and r_now >= CONFIG["BE_AT_R"]
             ):
+                p["b_sl"] = max(
+                    p["b_sl"],
+                    entry
+                )
 
-                if p["type"] == "B":
-
-                    exit_b = (
-                        p["entry"] +
-                        CONFIG["MAX_TRAIL_R"]
-                        *
-                        p["slDist"]
-                    )
-
-                else:
-
-                    exit_b = (
-                        p["entry"] -
-                        CONFIG["MAX_TRAIL_R"]
-                        *
-                        p["slDist"]
-                    )
-
-                p["exit"] = exit_b
-
-                p["exitR"] = (
+            # Trailing
+            if (
+                p in self.positions
+                and r_now >= CONFIG["TRAIL_STEP_R"]
+            ):
+                trail_r = min(
+                    math.floor(
+                        r_now
+                        / CONFIG["TRAIL_STEP_R"]
+                    ) * CONFIG["TRAIL_STEP_R"],
                     CONFIG["MAX_TRAIL_R"]
                 )
 
-                # =================================================
-                # ADDITION 2:
-                # Remember exact candle time for close chart.
-                # =================================================
+                if trail_r > p["trail_r"]:
+                    p["trail_r"] = trail_r
 
-                p["exit_time"] = int(
-                    candle["time"]
-                )
+                    new_sl = (
+                        entry
+                        + risk
+                        * max(
+                            0,
+                            trail_r
+                            - CONFIG["TRAIL_STEP_R"]
+                        )
+                    )
 
-                p["exit_candle"] = dict(
-                    candle
-                )
+                    p["b_sl"] = max(
+                        p["b_sl"],
+                        new_sl
+                    )
 
-                p["closeReason"] = (
-                    f"MAX_CAP "
-                    f"{CONFIG['MAX_TRAIL_R']:.0f}R"
-                )
-
-                p["gross"] += (
-                    CONFIG["MAX_TRAIL_R"]
-                    *
-                    p["riskPerR"]
-                )
-
-                self.trail_caps += 1
-
-                return True
-
-            # 4R -> +2R
-            # 6R -> +4R
-            # 8R -> +6R
             if (
-                max_r >=
-                CONFIG["BE_AT_R"]
+                p in self.positions
+                and price <= p["b_sl"]
             ):
-
-                steps = int(
-                    max_r /
-                    CONFIG["TRAIL_STEP_R"]
+                self.close_signal(
+                    p,
+                    p["b_sl"],
+                    "SL_BE_TRAIL"
                 )
 
-                lock_r = (
-                    steps - 1
-                ) * CONFIG["TRAIL_STEP_R"]
+        else:
 
-                if lock_r > 0:
+            r_now = (
+                entry - price
+            ) / risk
 
-                    if p["type"] == "B":
+            # A TP
+            if (
+                not p["a_closed"]
+                and price <= p["tp_a"]
+            ):
+                old_lot = p["lot"]
 
-                        new_sl = (
-                            p["entry"] +
-                            lock_r *
-                            p["slDist"]
+                if old_lot > 0:
+                    self.close_signal(
+                        p,
+                        p["tp_a"],
+                        "TP_A",
+                        fraction=(
+                            p["lot_a"]
+                            / old_lot
                         )
+                    )
 
-                        if new_sl > p["sl"]:
+                    p["a_closed"] = True
 
-                            p["sl"] = new_sl
+                    if p in self.positions:
+                        p["lot"] -= p["lot_a"]
 
-                            p["lockR"] = lock_r
+                        p["lot_a"] = 0
 
-                            self.trail_steps += 1
+                        p["b_sl"] = entry
 
-                    else:
+            # BE
+            if (
+                p in self.positions
+                and r_now >= CONFIG["BE_AT_R"]
+            ):
+                p["b_sl"] = min(
+                    p["b_sl"],
+                    entry
+                )
 
-                        new_sl = (
-                            p["entry"] -
-                            lock_r *
-                            p["slDist"]
+            # Trailing
+            if (
+                p in self.positions
+                and r_now >= CONFIG["TRAIL_STEP_R"]
+            ):
+                trail_r = min(
+                    math.floor(
+                        r_now
+                        / CONFIG["TRAIL_STEP_R"]
+                    ) * CONFIG["TRAIL_STEP_R"],
+                    CONFIG["MAX_TRAIL_R"]
+                )
+
+                if trail_r > p["trail_r"]:
+                    p["trail_r"] = trail_r
+
+                    new_sl = (
+                        entry
+                        - risk
+                        * max(
+                            0,
+                            trail_r
+                            - CONFIG["TRAIL_STEP_R"]
                         )
+                    )
 
-                        if new_sl < p["sl"]:
+                    p["b_sl"] = min(
+                        p["b_sl"],
+                        new_sl
+                    )
 
-                            p["sl"] = new_sl
-
-                            p["lockR"] = lock_r
-
-                            self.trail_steps += 1
-
-            return False
-
-        return False
+            if (
+                p in self.positions
+                and price >= p["b_sl"]
+            ):
+                self.close_signal(
+                    p,
+                    p["b_sl"],
+                    "SL_BE_TRAIL"
+                )
 
     # --------------------------------------------------------
-    # CLOSE
-    # --------------------------------------------------------
 
-    async def close_signal(
+    def manage_positions(
         self,
-        p
+        price,
     ):
-
-        close_comm = (
-            p["lot"] *
-            p["exit"] *
-            CONFIG["COMM_RATE"]
-        )
-
-        p["commission"] += (
-            close_comm
-        )
-
-        self.total_comm += (
-            close_comm
-        )
-
-        net_pnl = (
-            p["gross"] -
-            p["commission"]
-        )
-
-        self.balance += (
-            net_pnl
-        )
-
-        self.gross_pnl += (
-            p["gross"]
-        )
-
-        p["net_pnl"] = net_pnl
-
-        self.completedTrades += 1
-
-        if net_pnl > 0.01:
-
-            p["result"] = "W"
-
-            self.wins += 1
-
-        elif net_pnl < -0.01:
-
-            p["result"] = "L"
-
-            self.losses += 1
-
-        else:
-
-            p["result"] = "BE"
-
-            self.bes += 1
-
-        self.stats_2c["net"] += (
-            net_pnl
-        )
-
-        if net_pnl > 0.01:
-
-            self.stats_2c["wins"] += 1
-
-        elif net_pnl < -0.01:
-
-            self.stats_2c["losses"] += 1
-
-        self.register_result(
-            p["type"],
-            net_pnl
-        )
-
-        self.trades.append(
-            p
-        )
-
-        if p in self.positions:
-
-            self.positions.remove(
-                p
-            )
-
-        log.info(
-            f"{self.symbol} "
-            f"[{self.interval}] "
-            f"[{p['part']}] "
-            f"{p['exitR']:+.2f}R | "
-            f"net ${net_pnl:+.2f} | "
-            f"balance ${self.balance:.2f}"
-        )
-
-        emoji = (
-            "✅"
-            if p["result"] == "W"
-            else
-            "❌"
-            if p["result"] == "L"
-            else
-            "⚪"
-        )
-
-        blocked = (
-            " | 🛑 BLOCK"
-            if self.blocked_direction[
-                p["type"]
-            ]
-            else ""
-        )
-
-        await tg.send(
-            f"{emoji} "
-            f"<b>YOPILDI "
-            f"[{p['part']}] "
-            f"{self.symbol} "
-            f"[{self.interval}]</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 R: "
-            f"<b>{p['exitR']:+.2f}R</b>\n"
-            f"📌 {p.get('closeReason','SL')}\n"
-            f"💵 Gross: "
-            f"${p['gross']:+.2f}\n"
-            f"🔻 Comm: "
-            f"-${p['commission']:.2f}\n"
-            f"💰 Net: "
-            f"<b>${net_pnl:+.2f}</b>\n"
-            f"📈 Balance: "
-            f"<b>${self.balance:.2f}</b>\n"
-            f"🔥 Consecutive loss "
-            f"{p['type']}: "
-            f"{self.consecutive_losses[p['type']]}"
-            f"{blocked}"
-        )
-
-        # ====================================================
-        # ADDITION 2:
-        # Send CLOSE chart with EXIT marker.
-        #
-        # If the exit candle is still live and not yet inside
-        # self.candles, temporarily add it only for chart.
-        # ====================================================
-
-        chart_candles = list(
-            self.candles
-        )
-
-        exit_candle = p.get(
-            "exit_candle"
-        )
-
-        if exit_candle:
-
-            if (
-                not chart_candles
-                or
-                chart_candles[-1]["time"]
-                !=
-                exit_candle["time"]
-            ):
-
-                chart_candles.append(
-                    exit_candle
-                )
-
-        ch = make_chart(
-            chart_candles,
-            self.trades,
-            self.symbol,
-            self.interval,
-            f"· {p.get('part','')} EXIT",
+        for p in list(
             self.positions
-        )
-
-        if ch:
-
-            await tg.photo(
-                ch,
-                f"{self.symbol} [{self.interval}] · "
-                f"{p.get('part','')} EXIT · "
-                f"{p.get('closeReason','SL')}"
+        ):
+            self.manage_local(
+                p,
+                price
             )
 
-        self.check_day_reset()
-
-        if (
-            self.day_start_balance > 0
-        ):
-
-            day_loss = (
-                self.day_start_balance -
-                self.balance
-            ) / self.day_start_balance
-
-        else:
-
-            day_loss = 0
-
-        if (
-            day_loss >=
-            CONFIG["MAX_DAILY_LOSS_PCT"]
-            and
-            not self.trading_paused
-        ):
-
-            self.trading_paused = True
-
-            await tg.send(
-                f"🛑 <b>{self.symbol} "
-                f"[{self.interval}]: "
-                f"KUNLIK LOSS LIMIT</b>\n"
-                f"📉 "
-                f"-{day_loss*100:.2f}%"
-            )
-
-    # --------------------------------------------------------
-    # HISTORY FILTER
     # --------------------------------------------------------
 
     def history_check(
         self,
-        signal,
-        candle
+        features,
     ):
-
-        # ====================================================
-        # ADDITION 3:
-        #
-        # Build the exact live candle state first.
-        #
-        # self.candles contains CLOSED candles.
-        # The current websocket candle may not yet exist there.
-        #
-        # History filter must therefore use:
-        #
-        # OLD CLOSED CANDLES + CURRENT LIVE CANDLE
-        #
-        # This makes the historical feature calculation
-        # identical to the candle that generated the live signal.
-        # ====================================================
-
-        if (
-            self.candles
-            and
-            self.candles[-1]["time"]
-            ==
-            candle["time"]
-        ):
-
-            live_candles = (
-                self.candles[:-1]
-                +
-                [candle]
-            )
-
-        else:
-
-            live_candles = (
-                self.candles
-                +
-                [candle]
-            )
-
-        self.reset_block_if_structure_changed(
-            signal,
-            live_candles
-        )
-
-        if self.is_blocked(
-            signal["type"]
-        ):
-
-            return {
-                "allow": False,
-                "reason": "SELF_BLOCK_10_LOSSES",
-                "count": 0,
-                "good_pct": 0,
-                "avg_r": 0,
-                "time_ok": False,
-            }
-
-        if not self.db.ready:
-
-            return {
-                "allow": False,
-                "reason": "HISTORY_NOT_READY",
-                "count": 0,
-                "good_pct": 0,
-                "avg_r": 0,
-                "time_ok": False,
-            }
-
-        idx = len(
-            live_candles
-        ) - 1
-
-        features = make_features(
-            live_candles,
-            idx,
-            signal
-        )
-
-        if not features:
-
-            return {
-                "allow": False,
-                "reason": "FEATURE_ERROR",
-                "count": 0,
-                "good_pct": 0,
-                "avg_r": 0,
-                "time_ok": False,
-            }
-
-        result = self.db.evaluate(
+        return self.db.evaluate(
+            self.symbol,
+            self.interval,
             features
         )
 
-        return result
-
-    # --------------------------------------------------------
-    # OPEN SIGNAL
     # --------------------------------------------------------
 
     async def open_signal(
         self,
         signal,
         candle,
-        entry_price,
-        history_result,
-        realtime=True
     ):
-
-        self.check_day_reset()
-
-        if self.trading_paused:
-            return False
-
-        # Need two positions
-        slots_needed = 2
-
-        if (
-            len(self.positions) +
-            slots_needed
-            >
-            CONFIG["MAX_OPEN_POS"]
-        ):
-
-            log.info(
-                f"{self.symbol} [{self.interval}]: "
-                f"MAX OPEN reached"
-            )
-
-            return False
-
-        if (
-            self.last_signal_time
-            ==
-            candle["time"]
-        ):
-
-            return False
-
-        p_a = self.open_local(
-            signal,
-            candle,
-            "A",
-            entry_price
-        )
-
-        if not p_a:
-            return False
-
-        p_b = self.open_local(
-            signal,
-            candle,
-            "B",
-            entry_price
-        )
-
-        if not p_b:
-            return False
-
-        for p in (
-            p_a,
-            p_b
-        ):
-
-            p["history_count"] = (
-                history_result.get(
-                    "count",
-                    0
-                )
-            )
-
-            p["history_good_pct"] = (
-                history_result.get(
-                    "good_pct",
-                    0
-                )
-            )
-
-            p["history_avg_r"] = (
-                history_result.get(
-                    "avg_r",
-                    0
-                )
-            )
-
-            ts = history_result.get(
-                "time_stat"
-            )
-
-            if ts:
-
-                p["time_good_pct"] = (
-                    ts.get(
-                        "good_pct",
-                        0
-                    )
-                )
-
-            open_comm = (
-                p["lot"] *
-                p["entry"] *
-                CONFIG["COMM_RATE"]
-            )
-
-            p["commission"] += (
-                open_comm
-            )
-
-            self.total_comm += (
-                open_comm
-            )
-
-        self.positions.append(
-            p_a
-        )
-
-        self.positions.append(
-            p_b
-        )
-
-        self.last_signal_time = (
-            candle["time"]
-        )
-
-        if realtime:
-
-            self.rt_entries += 1
-
-        action = (
-            "BUY"
-            if signal["type"] == "B"
-            else
-            "SELL"
-        )
-
-        emoji = (
-            "🟢"
-            if signal["type"] == "B"
-            else
-            "🔴"
-        )
-
-        time_stat = (
-            history_result.get(
-                "time_stat"
-            )
-        )
-
-        time_pct = (
-            time_stat.get(
-                "good_pct",
-                0
-            )
-            if time_stat
-            else 0
-        )
-
-        await tg.send(
-            f"{emoji} "
-            f"<b>ENTRY {action} "
-            f"{self.symbol} "
-            f"[{self.interval}]</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ REALTIME PRICE\n"
-            f"💵 Entry: "
-            f"<b>${entry_price:.6f}</b>\n"
-            f"🛡 SL: "
-            f"${p_a['sl']:.6f}\n"
-            f"📚 6M similar: "
-            f"<b>{history_result['count']}</b>\n"
-            f"📈 Similar good: "
-            f"<b>{history_result['good_pct']*100:.1f}%</b>\n"
-            f"📊 Avg R: "
-            f"<b>{history_result['avg_r']:+.2f}R</b>\n"
-            f"⏰ Time good: "
-            f"<b>{time_pct*100:.1f}%</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 A: 1% risk → +2R CLOSE\n"
-            f"🎯 B: 1% risk → 2R BE\n"
-            f"   4R→SL+2R\n"
-            f"   6R→SL+4R\n"
-            f"   8R→SL+6R\n"
-            f"   10R→CLOSE\n"
-            f"📂 Open: "
-            f"{len(self.positions)}/"
-            f"{CONFIG['MAX_OPEN_POS']}"
-        )
-
-        # ====================================================
-        # ADDITION 3:
-        # Entry chart uses the actual live candle too.
-        # ====================================================
-
-        chart_candles = list(
-            self.candles
-        )
-
-        if (
-            not chart_candles
-            or
-            chart_candles[-1]["time"]
-            !=
-            candle["time"]
-        ):
-
-            chart_candles.append(
-                candle
-            )
-
-        else:
-
-            chart_candles[-1] = candle
-
-        ch = make_chart(
-            chart_candles,
-            self.trades,
-            self.symbol,
-            self.interval,
-            f"· {action} REALTIME",
-            self.positions
-        )
-
-        if ch:
-
-            await tg.photo(
-                ch,
-                f"{self.symbol} [{self.interval}] · {action}"
-            )
-
-        return True
-
-    # --------------------------------------------------------
-    # REALTIME SIGNAL
-    # --------------------------------------------------------
-
-    async def handle_realtime(
-        self,
-        candle
-    ):
-
-        if len(
-            self.candles
-        ) < 10:
-
+        if not self.can_trade():
+            self.stats["blocked"] += 1
             return
 
-        # Build temporary candle list
-        temp = (
-            self.candles[:-1]
-            +
-            [candle]
-            if
-            self.candles
-            and
-            self.candles[-1]["time"]
-            ==
-            candle["time"]
-            else
-            self.candles +
-            [candle]
-        )
+        self.stats["signals"] += 1
 
-        idx = len(
-            temp
-        ) - 1
-
-        signal = detect_engulfing(
-            temp,
-            idx
-        )
-
-        if not signal:
-
-            return
-
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # trigger must happen in CURRENT candle.
-        # ----------------------------------------------------
-
-        current_price = float(
+        entry = float(
             candle["close"]
         )
 
-        trigger = float(
-            signal["trigger"]
-        )
-
-        if signal["type"] == "B":
-
-            triggered = (
-                current_price >= trigger
+        if signal == "BUY":
+            sl = float(
+                candle["low"]
             )
-
         else:
-
-            triggered = (
-                current_price <= trigger
+            sl = float(
+                candle["high"]
             )
 
-        if not triggered:
-
-            return
-
-        # One trigger per candle
-        trigger_key = (
-            f"{candle['time']}:"
-            f"{signal['type']}"
+        # Small generic buffer.
+        #
+        # Kept compatible with the original structure,
+        # but percentage-based instead of Binance tick-size.
+        buf = (
+            abs(entry)
+            * CONFIG["SL_BUF"]
+            / 100000
         )
 
-        if (
-            self.last_trigger_candle
-            ==
-            trigger_key
-        ):
+        if signal == "BUY":
+            sl -= buf
+        else:
+            sl += buf
 
+        features = make_features(
+            self.candles,
+            len(self.candles) - 1,
+            signal
+        )
+
+        if not features:
             return
 
-        # ----------------------------------------------------
-        # Confirmation
-        # ----------------------------------------------------
+        features["timestamp"] = candle[
+            "timestamp"
+        ]
 
-        if self.pending_signal is None:
+        result = self.history_check(
+            features
+        )
 
-            self.pending_signal = {
-                "signal": signal,
-                "started_at": time.time(),
-                "count": 1,
-                "trigger": trigger,
-                "candle_time": candle[
-                    "time"
-                ],
-            }
-
+        if not result["ok"]:
             log.info(
-                f"⏳ {self.symbol} "
-                f"[{self.interval}]: "
-                f"{signal['type']} "
-                f"triggered "
-                f"1/{CONFIG['CONFIRM_TICKS']}"
-            )
-
-            return
-
-        pending = (
-            self.pending_signal
-        )
-
-        # Different direction
-        if (
-            pending["signal"]["type"]
-            !=
-            signal["type"]
-        ):
-
-            self.pending_signal = None
-
-            self.rt_rejected += 1
-
-            return
-
-        elapsed = (
-            time.time()
-            -
-            pending["started_at"]
-        )
-
-        # Confirm only if price still
-        # respects trigger.
-        if signal["type"] == "B":
-
-            still_valid = (
-                current_price >= trigger
-            )
-
-        else:
-
-            still_valid = (
-                current_price <= trigger
-            )
-
-        if not still_valid:
-
-            self.pending_signal = None
-
-            self.rt_rejected += 1
-
-            return
-
-        pending["count"] += 1
-
-        # ----------------------------------------------------
-        # Confirmation completed
-        # ----------------------------------------------------
-
-        if (
-            elapsed >=
-            CONFIG["CONFIRM_SECONDS"]
-            and
-            pending["count"]
-            >=
-            CONFIG["CONFIRM_TICKS"]
-        ):
-
-            self.rt_confirmed += 1
-
-            self.pending_signal = None
-
-            # =================================================
-            # ADDITION 3:
-            # History filter receives the same CURRENT
-            # open candle that generated the live signal.
-            # =================================================
-
-            history_result = (
-                self.history_check(
-                    signal,
-                    candle
-                )
-            )
-
-            reason = history_result[
-                "reason"
-            ]
-
-            if not history_result[
-                "allow"
-            ]:
-
-                if (
-                    reason ==
-                    "SIMILAR_TOO_FEW"
-                ):
-
-                    self.history_insufficient += 1
-
-                elif (
-                    reason ==
-                    "HISTORY_FILTER"
-                ):
-
-                    self.history_block += 1
-
-                elif (
-                    reason ==
-                    "SELF_BLOCK_10_LOSSES"
-                ):
-
-                    self.history_block += 1
-
-                log.info(
-                    f"🛑 {self.symbol} "
-                    f"[{self.interval}] "
-                    f"{signal['type']} "
-                    f"BLOCK: {reason} | "
-                    f"similar="
-                    f"{history_result['count']} | "
-                    f"good="
-                    f"{history_result['good_pct']*100:.1f}%"
-                )
-
-                return
-
-            self.history_pass += 1
-
-            # Entry EXACTLY at current
-            # realtime price.
-            entry_price = current_price
-
-            opened = await self.open_signal(
+                "FILTER %s %s %s: %s",
+                self.symbol,
+                self.interval,
                 signal,
-                candle,
-                entry_price,
-                history_result,
-                realtime=True
+                result["reason"]
+            )
+            return
+
+        p = self.open_local(
+            signal,
+            entry,
+            sl
+        )
+
+        if not p:
+            return
+
+        msg = (
+            f"🟢 <b>{signal}</b>\n"
+            f"<b>{self.symbol}</b> | "
+            f"{self.interval}\n"
+            f"Entry: {entry:.6f}\n"
+            f"SL: {sl:.6f}\n"
+            f"TP A: {p['tp_a']:.6f}\n"
+            f"Similar: {result['count']}\n"
+            f"Good: {result['good_pct']:.2%}\n"
+            f"Balance: {self.balance:.2f}"
+        )
+
+        await TG_CLIENT.send(msg)
+
+        chart = make_chart(
+            self.candles,
+            self.symbol,
+            self.interval,
+            entry=entry,
+            signal=signal,
+        )
+
+        if chart:
+            await TG_CLIENT.send_chart(
+                chart,
+                caption=(
+                    f"{self.symbol} {self.interval} "
+                    f"{signal}"
+                )
             )
 
-            if opened:
-
-                self.last_trigger_candle = (
-                    trigger_key
-                )
-
-    # --------------------------------------------------------
-    # CLOSED CANDLE
     # --------------------------------------------------------
 
     async def handle_closed(
         self,
-        candle
+        candle,
     ):
+        self.last_candle_time = time.time()
 
-        if (
-            self.candles
-            and
-            self.candles[-1]["time"]
-            ==
-            candle["time"]
-        ):
-
-            self.candles[-1] = candle
-
-        else:
-
+        if not self.candles:
             self.candles.append(
                 candle
             )
+        else:
+            last = self.candles[-1]
 
-        if len(
-            self.candles
-        ) > 500:
-
-            self.candles.pop(0)
-
-        # If realtime is disabled,
-        # use close-based entry.
-        if not CONFIG[
-            "REALTIME_ENTRY"
-        ]:
-
-            idx = len(
-                self.candles
-            ) - 1
-
-            signal = detect_engulfing(
-                self.candles,
-                idx
-            )
-
-            if signal:
-
-                history_result = (
-                    self.history_check(
-                        signal,
-                        candle
-                    )
-                )
-
-                if history_result[
-                    "allow"
-                ]:
-
-                    await self.open_signal(
-                        signal,
-                        candle,
-                        float(candle["close"]),
-                        history_result,
-                        realtime=False
-                    )
-
-        # New closed candle invalidates
-        # unfinished realtime confirmation.
-        self.pending_signal = None
-
-    # --------------------------------------------------------
-    # MANAGE POSITIONS
-    # --------------------------------------------------------
-
-    async def manage_positions(
-        self,
-        candle
-    ):
-
-        for p in list(
-            self.positions
-        ):
-
-            try:
-
-                closed = self.manage_local(
-                    p,
+            if (
+                last["timestamp"]
+                == candle["timestamp"]
+            ):
+                self.candles[-1] = candle
+            else:
+                self.candles.append(
                     candle
                 )
 
-                if closed:
+        # Manage using closing price first.
+        self.manage_positions(
+            float(candle["close"])
+        )
 
-                    await self.close_signal(
-                        p
-                    )
+        if len(self.candles) < 2:
+            return
 
-            except Exception as e:
+        idx = len(self.candles) - 1
 
-                log.error(
-                    f"{self.symbol} "
-                    f"[{self.interval}] "
-                    f"position manage: {e}"
+        signal = detect_engulfing(
+            self.candles,
+            idx
+        )
+
+        if signal:
+            await self.open_signal(
+                signal,
+                candle
+            )
+
+        max_keep = max(
+            CONFIG["HISTORY_LIMIT"],
+            CONFIG["PRELOAD_CANDLES"]
+        )
+
+        if len(self.candles) > max_keep:
+            self.candles = self.candles[
+                -max_keep:
+            ]
+
+    # --------------------------------------------------------
+
+    async def handle_realtime(
+        self,
+        candle,
+    ):
+        self.last_candle_time = time.time()
+
+        price = float(
+            candle["close"]
+        )
+
+        self.manage_positions(
+            price
+        )
+
+        if not CONFIG["REALTIME_ENTRY"]:
+            return
+
+        if len(self.candles) < 2:
+            return
+
+        # Current candle replaces the last
+        # unfinished candle.
+        test_candles = list(
+            self.candles
+        )
+
+        if (
+            test_candles
+            and test_candles[-1][
+                "timestamp"
+            ] == candle["timestamp"]
+        ):
+            test_candles[-1] = candle
+        else:
+            test_candles.append(
+                candle
+            )
+
+        if len(test_candles) < 2:
+            return
+
+        idx = len(test_candles) - 1
+
+        signal = detect_engulfing(
+            test_candles,
+            idx
+        )
+
+        if not signal:
+            return
+
+        key = signal
+
+        now = time.time()
+
+        pending = self.pending.get(
+            key
+        )
+
+        if pending is None:
+            self.pending[key] = {
+                "started": now,
+                "ticks": 1,
+                "candle_time": candle[
+                    "timestamp"
+                ],
+            }
+
+            return
+
+        if (
+            pending["candle_time"]
+            != candle["timestamp"]
+        ):
+            self.pending[key] = {
+                "started": now,
+                "ticks": 1,
+                "candle_time": candle[
+                    "timestamp"
+                ],
+            }
+
+            return
+
+        pending["ticks"] += 1
+
+        elapsed = (
+            now
+            - pending["started"]
+        )
+
+        if (
+            pending["ticks"]
+            >= CONFIG["CONFIRM_TICKS"]
+            and elapsed
+            >= CONFIG["CONFIRM_SECONDS"]
+        ):
+            # Prevent repeated entries from same candle.
+            candle_key = (
+                f"{candle['timestamp']}-"
+                f"{signal}"
+            )
+
+            if (
+                self.pending.get(
+                    "executed"
+                ) == candle_key
+            ):
+                return
+
+            self.pending["executed"] = candle_key
+
+            # Temporarily use test candle list
+            old = self.candles
+            self.candles = test_candles
+
+            try:
+                await self.open_signal(
+                    signal,
+                    candle
                 )
+            finally:
+                self.candles = old
 
 
 # ============================================================
-# PRELOAD CURRENT CANDLES
-# ============================================================
-
-async def preload_current(
-    client,
-    engine
-):
-
-    try:
-
-        klines = await client.get_klines(
-            symbol=engine.symbol,
-            interval=engine.interval,
-            limit=CONFIG["PRELOAD_CANDLES"]
-        )
-
-        candles = []
-
-        for k in klines[:-1]:
-
-            candles.append({
-                "time": int(
-                    k[0] // 1000
-                ),
-
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "closed": True,
-            })
-
-        engine.candles = candles
-
-        log.info(
-            f"📥 {engine.symbol} "
-            f"[{engine.interval}]: "
-            f"{len(candles)} current candles"
-        )
-
-    except Exception as e:
-
-        log.error(
-            f"{engine.symbol} "
-            f"[{engine.interval}] "
-            f"preload: {e}"
-        )
-
-
-# ============================================================
-# GLOBAL
+# GLOBAL ENGINES
 # ============================================================
 
 ENGINES = {}
 
-HISTORY_DBS = {}
-
 
 # ============================================================
-# WORKER
+# PRELOAD CURRENT
 # ============================================================
 
-async def worker(
+async def preload_current(
     client,
-    symbol,
-    interval
+    engine,
 ):
+    try:
+        data = await client.time_series(
+            symbol=engine.symbol,
+            interval=engine.interval,
+            outputsize=CONFIG[
+                "PRELOAD_CANDLES"
+            ] + 2,
+        )
 
-    # ========================================================
-    # ADDITION 1:
-    # Unique DB/Engine key = SYMBOL + TIMEFRAME
-    # ========================================================
+        values = data.get(
+            "values",
+            []
+        )
 
-    key = (
-        symbol,
+        candles = td_values_to_candles(
+            values
+        )
+
+        if candles:
+            engine.candles = candles[
+                -CONFIG["PRELOAD_CANDLES"]:
+            ]
+
+            engine.last_candle_time = (
+                time.time()
+            )
+
+            log.info(
+                "Preload %s %s: %d candles",
+                engine.symbol,
+                engine.interval,
+                len(engine.candles)
+            )
+
+    except Exception as e:
+        log.error(
+            "Preload error %s %s: %s",
+            engine.symbol,
+            engine.interval,
+            e
+        )
+
+
+# ============================================================
+# LIVE CANDLE BUILDER
+# ============================================================
+
+LIVE_CANDLES = {}
+
+
+def candle_bucket(
+    timestamp,
+    interval,
+):
+    sec = interval_seconds(
         interval
     )
 
-    db = HISTORY_DBS[
-        key
+    ts = int(
+        timestamp.timestamp()
+    )
+
+    bucket = (
+        ts // sec
+    ) * sec
+
+    return datetime.fromtimestamp(
+        bucket,
+        tz=timezone.utc
+    )
+
+
+async def process_price_tick(
+    symbol,
+    price,
+    timestamp=None,
+):
+    symbol = normalize_symbol(
+        symbol
+    )
+
+    if timestamp is None:
+        timestamp = datetime.now(
+            timezone.utc
+        )
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(
+            tzinfo=timezone.utc
+        )
+
+    price = float(price)
+
+    for (
+        key,
+        engine
+    ) in list(ENGINES.items()):
+
+        if engine.symbol != symbol:
+            continue
+
+        interval = engine.interval
+
+        bucket = candle_bucket(
+            timestamp,
+            interval
+        )
+
+        live_key = (
+            symbol,
+            interval
+        )
+
+        current = LIVE_CANDLES.get(
+            live_key
+        )
+
+        # ----------------------------------------------------
+        # New candle
+        # ----------------------------------------------------
+
+        if current is None:
+
+            # Start live candle from current price.
+            current = {
+                "timestamp": bucket,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": 0.0,
+                "closed": False,
+            }
+
+            LIVE_CANDLES[
+                live_key
+            ] = current
+
+            await engine.handle_realtime(
+                current
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # Same candle
+        # ----------------------------------------------------
+
+        if current[
+            "timestamp"
+        ] == bucket:
+
+            current["high"] = max(
+                current["high"],
+                price
+            )
+
+            current["low"] = min(
+                current["low"],
+                price
+            )
+
+            current["close"] = price
+
+            await engine.handle_realtime(
+                current
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # Candle changed
+        # ----------------------------------------------------
+
+        previous = dict(
+            current
+        )
+
+        previous["closed"] = True
+
+        # First save/close old candle.
+        await engine.handle_closed(
+            previous
+        )
+
+        # Create new candle.
+        new_candle = {
+            "timestamp": bucket,
+            "open": price,
+            "high": price,
+            "low": price,
+            "close": price,
+            "volume": 0.0,
+            "closed": False,
+        }
+
+        LIVE_CANDLES[
+            live_key
+        ] = new_candle
+
+        await engine.handle_realtime(
+            new_candle
+        )
+
+
+# ============================================================
+# PRICE WEBSOCKET
+# ============================================================
+
+async def market_stream(
+    client,
+):
+    symbols = [
+        normalize_symbol(x)
+        for x in CONFIG["SYMBOLS"]
     ]
 
-    engine = Engine(
-        symbol,
-        interval,
-        db
-    )
-
-    ENGINES[
-        key
-    ] = engine
-
-    log.info(
-        f"🔵 {symbol} [{interval}] worker start"
-    )
-
-    await preload_current(
-        client,
-        engine
-    )
-
-    bsm = BinanceSocketManager(
-        client
-    )
+    reconnect_delay = 3
 
     while True:
 
         try:
-
-            socket = (
-                bsm.kline_socket(
-                    symbol=symbol,
-                    interval=interval
-                )
+            log.info(
+                "Connecting Twelve Data price stream..."
             )
 
-            async with socket as stream:
-
-                log.info(
-                    f"🟢 {symbol} "
-                    f"[{interval}] socket connected"
-                )
-
-                while True:
-
-                    msg = await stream.recv()
-
-                    if (
-                        not msg
-                        or
-                        msg.get("e")
-                        !=
-                        "kline"
+            async for raw in client.price_stream(
+                symbols
+            ):
+                try:
+                    if isinstance(
+                        raw,
+                        bytes
                     ):
+                        raw = raw.decode(
+                            "utf-8",
+                            errors="ignore"
+                        )
 
+                    msg = json.loads(
+                        raw
+                    )
+
+                    # Ignore subscription/status messages.
+                    if not isinstance(
+                        msg,
+                        dict
+                    ):
                         continue
 
-                    engine.last_candle_time = (
-                        time.time()
-                    )
-
-                    k = msg["k"]
-
-                    candle = {
-                        "time": int(
-                            k["t"] // 1000
-                        ),
-
-                        "open": float(k["o"]),
-                        "high": float(k["h"]),
-                        "low": float(k["l"]),
-                        "close": float(k["c"]),
-
-                        "closed": bool(k["x"]),
-                    }
-
-                    # ------------------------------------------------
-                    # REALTIME
-                    # ------------------------------------------------
-
-                    if (
-                        CONFIG[
-                            "REALTIME_ENTRY"
-                        ]
-                        and
-                        not candle["closed"]
+                    if msg.get(
+                        "event"
+                    ) in (
+                        "subscribe-status",
+                        "heartbeat",
                     ):
+                        continue
 
-                        await engine.handle_realtime(
-                            candle
-                        )
-
-                    # ------------------------------------------------
-                    # CLOSED
-                    # ------------------------------------------------
-
-                    if candle["closed"]:
-
-                        await engine.handle_closed(
-                            candle
-                        )
-
-                    # ------------------------------------------------
-                    # POSITIONS
-                    # ------------------------------------------------
-
-                    await engine.manage_positions(
-                        candle
+                    symbol = (
+                        msg.get("symbol")
+                        or msg.get("code")
                     )
+
+                    price = (
+                        msg.get("price")
+                        or msg.get("close")
+                        or msg.get("value")
+                    )
+
+                    if not symbol or price is None:
+                        continue
+
+                    ts_value = (
+                        msg.get("timestamp")
+                        or msg.get("time")
+                    )
+
+                    ts = None
+
+                    if ts_value is not None:
+                        try:
+                            if isinstance(
+                                ts_value,
+                                (int, float)
+                            ):
+                                ts = datetime.fromtimestamp(
+                                    float(ts_value),
+                                    tz=timezone.utc
+                                )
+                            else:
+                                ts = pd.to_datetime(
+                                    ts_value,
+                                    utc=True
+                                ).to_pydatetime()
+                        except Exception:
+                            ts = None
+
+                    await process_price_tick(
+                        symbol,
+                        float(price),
+                        ts
+                    )
+
+                except Exception as e:
+                    log.error(
+                        "Price message error: %s",
+                        e
+                    )
+
+        except asyncio.CancelledError:
+            raise
 
         except Exception as e:
-
             log.error(
-                f"{symbol} [{interval}] "
-                f"socket error: "
-                f"{e} — reconnect 5s"
+                "Market stream disconnected: %s",
+                e
             )
 
             await asyncio.sleep(
-                5
+                reconnect_delay
             )
 
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-async def health_check():
-
-    warned = {}
-
-    while True:
-
-        await asyncio.sleep(
-            60
-        )
-
-        now = time.time()
-
-        for key, engine in ENGINES.items():
-
-            symbol, interval = key
-
-            if (
-                engine.last_candle_time
-                is None
-            ):
-
-                continue
-
-            silent = (
-                now -
-                engine.last_candle_time
-            )
-
-            limit = (
-                CONFIG[
-                    "SOCKET_TIMEOUT_MIN"
-                ]
-                *
+            reconnect_delay = min(
+                reconnect_delay * 2,
                 60
             )
 
-            warn_key = (
-                symbol,
-                interval
-            )
-
-            if (
-                silent >= limit
-                and
-                not warned.get(warn_key)
-            ):
-
-                warned[warn_key] = True
-
-                await tg.send(
-                    f"⚠️ <b>{symbol} "
-                    f"[{interval}] "
-                    f"SOCKET JIM</b>\n"
-                    f"{int(silent//60)} min"
-                )
-
-            elif silent < limit:
-
-                warned[warn_key] = False
+            continue
 
 
 # ============================================================
-# DAILY DIAGNOSTICS
-# ============================================================
-
-async def daily_diagnostics():
-
-    sent = None
-
-    while True:
-
-        now = datetime.now(
-            timezone.utc
-        )
-
-        key = now.strftime(
-            "%Y-%m-%d"
-        )
-
-        if (
-            now.hour ==
-            CONFIG["DIAGNOSTICS_HOUR"]
-            and
-            sent != key
-        ):
-
-            sent = key
-
-            if ENGINES:
-
-                total_trades = sum(
-                    e.completedTrades
-                    for e in ENGINES.values()
-                )
-
-                total_wins = sum(
-                    e.wins
-                    for e in ENGINES.values()
-                )
-
-                total_losses = sum(
-                    e.losses
-                    for e in ENGINES.values()
-                )
-
-                total_net = sum(
-                    e.balance -
-                    e.initial
-                    for e in ENGINES.values()
-                )
-
-                rt_confirmed = sum(
-                    e.rt_confirmed
-                    for e in ENGINES.values()
-                )
-
-                rt_entries = sum(
-                    e.rt_entries
-                    for e in ENGINES.values()
-                )
-
-                history_pass = sum(
-                    e.history_pass
-                    for e in ENGINES.values()
-                )
-
-                history_block = sum(
-                    e.history_block
-                    for e in ENGINES.values()
-                )
-
-                insufficient = sum(
-                    e.history_insufficient
-                    for e in ENGINES.values()
-                )
-
-                wr = (
-                    total_wins /
-                    (
-                        total_wins +
-                        total_losses
-                    )
-                    *
-                    100
-                    if
-                    (
-                        total_wins +
-                        total_losses
-                    ) > 0
-                    else 0
-                )
-
-                txt = (
-                    f"🔍 <b>DIAGNOSTICS</b> "
-                    f"{now.strftime('%d.%m.%Y')}\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"Trades: {total_trades}\n"
-                    f"WR: {wr:.1f}%\n"
-                    f"Net: ${total_net:+.2f}\n\n"
-                    f"⚡ RT confirmed: "
-                    f"{rt_confirmed}\n"
-                    f"⚡ RT opened: "
-                    f"{rt_entries}\n\n"
-                    f"📚 History PASS: "
-                    f"{history_pass}\n"
-                    f"🛑 History BLOCK: "
-                    f"{history_block}\n"
-                    f"📚 Similar < "
-                    f"{CONFIG['MIN_SIMILAR']}: "
-                    f"{insufficient}\n\n"
-                )
-
-                for key, e in ENGINES.items():
-
-                    symbol, interval = key
-
-                    db = e.db
-
-                    txt += (
-                        f"<b>{symbol} "
-                        f"[{interval}]</b>\n"
-                        f"Balance: "
-                        f"${e.balance:.2f}\n"
-                        f"Trades: "
-                        f"{e.completedTrades}\n"
-                        f"W/L: "
-                        f"{e.wins}/"
-                        f"{e.losses}\n"
-                        f"RT: "
-                        f"{e.rt_entries}\n"
-                        f"Hist pass: "
-                        f"{e.history_pass}\n"
-                        f"Block B/S: "
-                        f"{e.blocked_direction['B']}/"
-                        f"{e.blocked_direction['S']}\n"
-                        f"6M setups: "
-                        f"{len(db.rows)}\n\n"
-                    )
-
-                await tg.send(
-                    txt
-                )
-
-        await asyncio.sleep(
-            60
-        )
-
-
-# ============================================================
-# DAILY REPORT
+# REPORT
 # ============================================================
 
 async def daily_report():
+    lines = [
+        "📊 <b>DAILY REPORT</b>",
+        "",
+    ]
 
-    sent = None
+    total_balance = 0.0
+    total_pnl = 0.0
+    total_trades = 0
+
+    for engine in ENGINES.values():
+
+        pnl = (
+            engine.balance
+            - CONFIG["BALANCE"]
+        )
+
+        total_balance += engine.balance
+        total_pnl += pnl
+        total_trades += len(
+            engine.trades
+        )
+
+        lines.append(
+            f"<b>{engine.symbol} "
+            f"{engine.interval}</b> | "
+            f"Balance {engine.balance:.2f} | "
+            f"PnL {pnl:.2f} | "
+            f"W {engine.stats['wins']} | "
+            f"L {engine.stats['losses']}"
+        )
+
+    lines.extend([
+        "",
+        f"Total balance: {total_balance:.2f}",
+        f"Total PnL: {total_pnl:.2f}",
+        f"Trades: {total_trades}",
+    ])
+
+    await TG_CLIENT.send(
+        "\n".join(lines)
+    )
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+async def health_check():
+    while True:
+
+        try:
+            now = time.time()
+
+            dead = []
+
+            for key, engine in ENGINES.items():
+
+                age = (
+                    now
+                    - engine.last_candle_time
+                )
+
+                if age > (
+                    CONFIG["SOCKET_TIMEOUT_MIN"]
+                    * 60
+                ):
+                    dead.append(
+                        (
+                            engine.symbol,
+                            engine.interval,
+                            age
+                        )
+                    )
+
+            if dead:
+                text = (
+                    "⚠️ <b>MARKET DATA WARNING</b>\n"
+                )
+
+                for (
+                    symbol,
+                    interval,
+                    age
+                ) in dead:
+                    text += (
+                        f"{symbol} {interval}: "
+                        f"{age/60:.1f} min\n"
+                    )
+
+                await TG_CLIENT.send(
+                    text
+                )
+
+        except Exception as e:
+            log.error(
+                "Health error: %s",
+                e
+            )
+
+        await asyncio.sleep(60)
+
+
+# ============================================================
+# DIAGNOSTICS
+# ============================================================
+
+async def diagnostics_loop():
+    last_day = None
 
     while True:
 
-        now = datetime.now(
-            timezone.utc
-        )
+        try:
+            now = datetime.now(
+                timezone.utc
+            )
 
-        key = now.strftime(
-            "%Y-%m-%d"
-        )
+            if (
+                now.hour
+                == CONFIG["DIAGNOSTICS_HOUR"]
+                and now.minute < 5
+                and last_day != now.date()
+            ):
+                last_day = now.date()
 
-        if (
-            now.hour ==
-            CONFIG["REPORT_HOUR"]
-            and
-            now.minute < 1
-            and
-            sent != key
-        ):
+                lines = [
+                    "🔎 <b>BOT DIAGNOSTICS</b>",
+                    "",
+                ]
 
-            sent = key
+                for engine in ENGINES.values():
 
-            if ENGINES:
-
-                total_balance = sum(
-                    e.balance
-                    for e in ENGINES.values()
-                )
-
-                total_initial = sum(
-                    e.initial
-                    for e in ENGINES.values()
-                )
-
-                total_w = sum(
-                    e.wins
-                    for e in ENGINES.values()
-                )
-
-                total_l = sum(
-                    e.losses
-                    for e in ENGINES.values()
-                )
-
-                total = (
-                    total_w +
-                    total_l
-                )
-
-                wr = (
-                    total_w /
-                    total *
-                    100
-                    if total > 0
-                    else 0
-                )
-
-                pct = (
-                    (
-                        total_balance -
-                        total_initial
-                    )
-                    /
-                    total_initial
-                    *
-                    100
-                    if total_initial
-                    else 0
-                )
-
-                txt = (
-                    f"📊 <b>DAILY REPORT</b> "
-                    f"{now.strftime('%d.%m.%Y')}\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"JAMI BALANCE: "
-                    f"<b>${total_balance:.2f}</b>\n"
-                    f"RESULT: "
-                    f"<b>{pct:+.2f}%</b>\n"
-                    f"WR: "
-                    f"<b>{wr:.1f}%</b>\n\n"
-                )
-
-                for key, e in ENGINES.items():
-
-                    symbol, interval = key
-
-                    trades = (
-                        e.wins +
-                        e.losses
+                    lines.append(
+                        f"{engine.symbol} "
+                        f"{engine.interval}: "
+                        f"candles={len(engine.candles)}, "
+                        f"positions={len(engine.positions)}, "
+                        f"signals={engine.stats['signals']}, "
+                        f"blocked={engine.self_blocked}"
                     )
 
-                    swr = (
-                        e.wins /
-                        trades *
-                        100
-                        if trades > 0
-                        else 0
-                    )
-
-                    txt += (
-                        f"{symbol} [{interval}]: "
-                        f"${e.balance:.2f} | "
-                        f"WR {swr:.1f}% | "
-                        f"W{e.wins}/"
-                        f"L{e.losses} | "
-                        f"RT {e.rt_entries}\n"
-                    )
-
-                txt += (
-                    f"\n📚 6M Similar filter: "
-                    f">= "
-                    f"{CONFIG['MIN_SIMILAR']} "
-                    f"and >= "
-                    f"{CONFIG['SIMILAR_GOOD_PCT']*100:.0f}%\n"
-                    f"⏰ Time filter: >= "
-                    f"{CONFIG['TIME_MIN_GOOD_PCT']*100:.0f}%\n"
-                    f"🛑 Self block: "
-                    f"{CONFIG['MAX_CONSECUTIVE_LOSSES']} losses\n"
-                    f"⚖️ Total risk/signal: "
-                    f"{CONFIG['RISK_PCT']*100:.1f}%"
+                await TG_CLIENT.send(
+                    "\n".join(lines)
                 )
 
-                await tg.send(
-                    txt
-                )
+        except Exception as e:
+            log.error(
+                "Diagnostics error: %s",
+                e
+            )
 
-        await asyncio.sleep(
-            30
-        )
+        await asyncio.sleep(30)
+
+
+# ============================================================
+# REPORT LOOP
+# ============================================================
+
+async def report_loop():
+    last_day = None
+
+    while True:
+
+        try:
+            now = datetime.now(
+                timezone.utc
+            )
+
+            if (
+                now.hour
+                == CONFIG["REPORT_HOUR"]
+                and now.minute < 5
+                and last_day != now.date()
+            ):
+                last_day = now.date()
+
+                await daily_report()
+
+        except Exception as e:
+            log.error(
+                "Report loop error: %s",
+                e
+            )
+
+        await asyncio.sleep(30)
 
 
 # ============================================================
@@ -3856,152 +2722,64 @@ async def daily_report():
 
 async def main():
 
-    log.info(
-        "🚀 EngulfingTrend Bot v6.0.0"
-    )
-
-    log.info(
-        f"Symbols: "
-        f"{CONFIG['SYMBOLS']}"
-    )
-
-    # ========================================================
-    # ADDITION 1:
-    # Show all independent timeframes.
-    # ========================================================
-
-    log.info(
-        f"TFs: "
-        f"{CONFIG['INTERVALS']}"
-    )
-
-    log.info(
-        f"6M history: "
-        f"{CONFIG['HISTORY_MONTHS']} months"
-    )
-
-    log.info(
-        f"Similarity minimum: "
-        f"{CONFIG['MIN_SIMILAR']}"
-    )
-
-    log.info(
-        f"Similarity good: "
-        f"{CONFIG['SIMILAR_GOOD_PCT']*100:.1f}%"
-    )
-
-    log.info(
-        f"Time filter: "
-        f"{CONFIG['TIME_MIN_GOOD_PCT']*100:.1f}%"
-    )
-
-    log.info(
-        f"Total risk/signal: "
-        f"{CONFIG['RISK_PCT']*100:.1f}%"
-    )
-
-    log.info(
-        "A = 1% / +2R"
-    )
-
-    log.info(
-        "B = 1% / BE2R / "
-        "4R→+2R / "
-        "6R→+4R / "
-        "8R→+6R / "
-        "10R close"
-    )
-
-    client = await AsyncClient.create()
-
-    try:
-
-        # ----------------------------------------------------
-        # TELEGRAM START
-        # ----------------------------------------------------
-
-        await tg.send(
-            f"🚀 <b>EngulfingTrend "
-            f"v6.0.0 AKTIV</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ Realtime entry: "
-            f"<b>{CONFIG['REALTIME_ENTRY']}</b>\n"
-            f"⏱ Timeframes: "
-            f"<b>{', '.join(CONFIG['INTERVALS'])}</b>\n"
-            f"📚 Historical: "
-            f"<b>{CONFIG['HISTORY_MONTHS']} oy</b>\n"
-            f"🔎 Similar minimum: "
-            f"<b>{CONFIG['MIN_SIMILAR']}</b>\n"
-            f"📈 Good minimum: "
-            f"<b>{CONFIG['SIMILAR_GOOD_PCT']*100:.0f}%</b>\n"
-            f"⏰ Time filter: "
-            f"<b>{CONFIG['TIME_MIN_GOOD_PCT']*100:.0f}%</b>\n"
-            f"🛑 Loss block: "
-            f"<b>{CONFIG['MAX_CONSECUTIVE_LOSSES']}</b>\n"
-            f"⚖️ Total risk: "
-            f"<b>{CONFIG['RISK_PCT']*100:.1f}%</b>\n"
-            f"🎯 A: +2R\n"
-            f"🎯 B: BE2R + trailing\n"
+    if not TWELVE_DATA_API_KEY:
+        raise RuntimeError(
+            "TWELVE_DATA_API_KEY is missing"
         )
 
-        # ----------------------------------------------------
-        # BUILD 6 MONTH DATABASES
-        # ----------------------------------------------------
+    if not TELEGRAM_TOKEN:
+        log.warning(
+            "TELEGRAM_TOKEN is missing"
+        )
 
-        for symbol in CONFIG["SYMBOLS"]:
+    if not TELEGRAM_CHAT_ID:
+        log.warning(
+            "TELEGRAM_CHAT_ID is missing"
+        )
 
-            for interval in CONFIG["INTERVALS"]:
+    log.info(
+        "=================================================="
+    )
 
-                try:
+    log.info(
+        "EngulfingTrend Bot v6.0.0"
+    )
 
-                    db = await build_history_db(
-                        client,
-                        symbol,
-                        interval
-                    )
+    log.info(
+        "Market data: Twelve Data"
+    )
 
-                    key = (
-                        symbol,
-                        interval
-                    )
+    log.info(
+        "Symbols: %s",
+        CONFIG["SYMBOLS"]
+    )
 
-                    HISTORY_DBS[
-                        key
-                    ] = db
+    log.info(
+        "Intervals: %s",
+        CONFIG["INTERVALS"]
+    )
 
-                    await tg.send(
-                        f"📚 <b>{symbol} "
-                        f"[{interval}]</b>\n"
-                        f"6M history tayyor\n"
-                        f"Setup: "
-                        f"<b>{len(db.rows)}</b>\n"
-                        f"Time buckets: "
-                        f"<b>{len(db.time_stats)}</b>"
-                    )
+    log.info(
+        "Commission: %.8f",
+        CONFIG["COMM_RATE"]
+    )
 
-                except Exception as e:
+    log.info(
+        "=================================================="
+    )
 
-                    log.error(
-                        f"{symbol} [{interval}] "
-                        f"history build: "
-                        f"{e}"
-                    )
+    client = TwelveData(
+        TWELVE_DATA_API_KEY
+    )
 
-                    HISTORY_DBS[
-                        (
-                            symbol,
-                            interval
-                        )
-                    ] = HistoricalDB(
-                        symbol,
-                        interval
-                    )
+    db = HistoricalDB()
+
+    try:
+        await client.start()
 
         # ----------------------------------------------------
-        # WORKERS
+        # BUILD 6 MONTH HISTORY
         # ----------------------------------------------------
-
-        tasks = []
 
         for symbol in CONFIG[
             "SYMBOLS"
@@ -4011,60 +2789,103 @@ async def main():
                 "INTERVALS"
             ]:
 
-                key = (
+                symbol = normalize_symbol(
+                    symbol
+                )
+
+                log.info(
+                    "Building history: %s %s",
                     symbol,
                     interval
                 )
 
-                if key not in HISTORY_DBS:
-                    continue
-
-                tasks.append(
-                    asyncio.create_task(
-                        worker(
-                            client,
-                            symbol,
-                            interval
-                        )
-                    )
+                await build_history_db(
+                    client,
+                    db,
+                    symbol,
+                    interval
                 )
 
-        tasks.append(
-            asyncio.create_task(
-                daily_report()
+        # ----------------------------------------------------
+        # CREATE ENGINES
+        # ----------------------------------------------------
+
+        for symbol in CONFIG[
+            "SYMBOLS"
+        ]:
+
+            symbol = normalize_symbol(
+                symbol
             )
+
+            for interval in CONFIG[
+                "INTERVALS"
+            ]:
+
+                engine = Engine(
+                    symbol,
+                    interval,
+                    db
+                )
+
+                ENGINES[
+                    (
+                        symbol,
+                        interval
+                    )
+                ] = engine
+
+                await preload_current(
+                    client,
+                    engine
+                )
+
+        # ----------------------------------------------------
+        # TELEGRAM START
+        # ----------------------------------------------------
+
+        await TG_CLIENT.send(
+            "🟢 <b>EngulfingTrend Bot v6.0.0 STARTED</b>\n\n"
+            f"Market: Twelve Data\n"
+            f"Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
+            f"Timeframes: {', '.join(CONFIG['INTERVALS'])}\n"
+            f"Commission: {CONFIG['COMM_RATE']}\n"
+            f"Historical DB: {CONFIG['HISTORY_MONTHS']} months"
         )
 
-        tasks.append(
+        # ----------------------------------------------------
+        # RUN ALL TASKS
+        # ----------------------------------------------------
+
+        tasks = [
+            asyncio.create_task(
+                market_stream(client)
+            ),
+
             asyncio.create_task(
                 health_check()
-            )
-        )
+            ),
 
-        tasks.append(
             asyncio.create_task(
-                daily_diagnostics()
-            )
-        )
+                diagnostics_loop()
+            ),
+
+            asyncio.create_task(
+                report_loop()
+            ),
+        ]
 
         await asyncio.gather(
             *tasks
         )
 
-    except Exception as e:
-
-        log.error(
-            f"MAIN ERROR: {e}"
-        )
-
-        await tg.send(
-            f"❌ <b>BOT ERROR</b>\n"
-            f"<code>{str(e)[:1000]}</code>"
-        )
-
     finally:
 
-        await client.close_connection()
+        await client.close()
+
+        log.info(
+            "Bot stopped."
+        )
 
 
 # ============================================================
@@ -4074,13 +2895,17 @@ async def main():
 if __name__ == "__main__":
 
     try:
-
         asyncio.run(
             main()
         )
 
     except KeyboardInterrupt:
-
         log.info(
-            "Bot stopped"
+            "Stopped by user."
+        )
+
+    except Exception as e:
+        log.exception(
+            "FATAL ERROR: %s",
+            e
         )
