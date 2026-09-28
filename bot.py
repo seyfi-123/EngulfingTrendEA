@@ -32,9 +32,20 @@ from telegram.constants import ParseMode
 
 load_dotenv()
 
-TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TWELVE_DATA_API_KEY = os.getenv(
+    "TWELVE_DATA_API_KEY",
+    ""
+).strip()
+
+TELEGRAM_TOKEN = os.getenv(
+    "TELEGRAM_TOKEN",
+    ""
+).strip()
+
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
 
 
 # ============================================================
@@ -46,7 +57,7 @@ CONFIG = {
         x.strip()
         for x in os.getenv(
             "SYMBOLS",
-            "XAU/USD,EUR/USD,GBP/USD,SPX"
+            "SPY,WTI/USD,XAU/USD,USD/JPY,EUR/USD"
         ).split(",")
         if x.strip()
     ],
@@ -60,95 +71,266 @@ CONFIG = {
         if x.strip()
     ],
 
-    "INTERVAL": os.getenv("INTERVAL", "1m"),
-
-    "BALANCE": float(os.getenv("BALANCE", "1000")),
-    "RISK_PCT": float(os.getenv("RISK_PCT", "0.02")),
-    "PART_RISK_RATIO": float(os.getenv("PART_RISK_RATIO", "0.50")),
-
-    "LOT_MIN": float(os.getenv("LOT_MIN", "0.001")),
-    "LOT_MAX": float(os.getenv("LOT_MAX", "5.0")),
-    "MIN_RISK_USD": float(os.getenv("MIN_RISK_USD", "1.0")),
-
-    "MAX_OPEN_POS": int(os.getenv("MAX_OPEN_POS", "10")),
-
-    "PRELOAD_CANDLES": int(os.getenv("PRELOAD_CANDLES", "300")),
-    "HISTORY_MONTHS": int(os.getenv("HISTORY_MONTHS", "6")),
-    "HISTORY_LOOKBACK_CANDLES": int(
-        os.getenv("HISTORY_LOOKBACK_CANDLES", "10")
+    "INTERVAL": os.getenv(
+        "INTERVAL",
+        "1m"
     ),
 
-    "SL_BUF": float(os.getenv("SL_BUF", "10")),
+    "BALANCE": float(
+        os.getenv(
+            "BALANCE",
+            "1000"
+        )
+    ),
+
+    "RISK_PCT": float(
+        os.getenv(
+            "RISK_PCT",
+            "0.02"
+        )
+    ),
+
+    "PART_RISK_RATIO": float(
+        os.getenv(
+            "PART_RISK_RATIO",
+            "0.50"
+        )
+    ),
+
+    "LOT_MIN": float(
+        os.getenv(
+            "LOT_MIN",
+            "0.001"
+        )
+    ),
+
+    "LOT_MAX": float(
+        os.getenv(
+            "LOT_MAX",
+            "5.0"
+        )
+    ),
+
+    "MIN_RISK_USD": float(
+        os.getenv(
+            "MIN_RISK_USD",
+            "1.0"
+        )
+    ),
+
+    "MAX_OPEN_POS": int(
+        os.getenv(
+            "MAX_OPEN_POS",
+            "10"
+        )
+    ),
+
+    "PRELOAD_CANDLES": int(
+        os.getenv(
+            "PRELOAD_CANDLES",
+            "300"
+        )
+    ),
+
+    "HISTORY_MONTHS": int(
+        os.getenv(
+            "HISTORY_MONTHS",
+            "6"
+        )
+    ),
+
+    "HISTORY_LOOKBACK_CANDLES": int(
+        os.getenv(
+            "HISTORY_LOOKBACK_CANDLES",
+            "10"
+        )
+    ),
+
+    "SL_BUF": float(
+        os.getenv(
+            "SL_BUF",
+            "10"
+        )
+    ),
 
     "REALTIME_ENTRY": os.getenv(
-        "REALTIME_ENTRY", "true"
+        "REALTIME_ENTRY",
+        "true"
     ).lower() == "true",
 
     "CONFIRM_SECONDS": float(
-        os.getenv("CONFIRM_SECONDS", "2.5")
+        os.getenv(
+            "CONFIRM_SECONDS",
+            "2.5"
+        )
     ),
 
     "CONFIRM_TICKS": int(
-        os.getenv("CONFIRM_TICKS", "2")
+        os.getenv(
+            "CONFIRM_TICKS",
+            "2"
+        )
     ),
 
-    "A_TP_R": float(os.getenv("A_TP_R", "2")),
-    "BE_AT_R": float(os.getenv("BE_AT_R", "2")),
-    "TRAIL_STEP_R": float(os.getenv("TRAIL_STEP_R", "2")),
-    "MAX_TRAIL_R": float(os.getenv("MAX_TRAIL_R", "10")),
+    "A_TP_R": float(
+        os.getenv(
+            "A_TP_R",
+            "2"
+        )
+    ),
 
-    "COMM_RATE": float(os.getenv("COMM_RATE", "0")),
+    "BE_AT_R": float(
+        os.getenv(
+            "BE_AT_R",
+            "2"
+        )
+    ),
 
-    "MIN_SIMILAR": int(os.getenv("MIN_SIMILAR", "25")),
+    "TRAIL_STEP_R": float(
+        os.getenv(
+            "TRAIL_STEP_R",
+            "2"
+        )
+    ),
+
+    "MAX_TRAIL_R": float(
+        os.getenv(
+            "MAX_TRAIL_R",
+            "10"
+        )
+    ),
+
+    "COMM_RATE": float(
+        os.getenv(
+            "COMM_RATE",
+            "0"
+        )
+    ),
+
+    "MIN_SIMILAR": int(
+        os.getenv(
+            "MIN_SIMILAR",
+            "25"
+        )
+    ),
+
     "SIMILAR_GOOD_PCT": float(
-        os.getenv("SIMILAR_GOOD_PCT", "0.40")
+        os.getenv(
+            "SIMILAR_GOOD_PCT",
+            "0.40"
+        )
     ),
 
-    "BODY_TOL": float(os.getenv("BODY_TOL", "0.35")),
-    "RANGE_TOL": float(os.getenv("RANGE_TOL", "0.35")),
-    "WICK_TOL": float(os.getenv("WICK_TOL", "0.35")),
-    "STRUCT_TOL": float(os.getenv("STRUCT_TOL", "0.50")),
-    "DIST_TOL": float(os.getenv("DIST_TOL", "0.50")),
+    "BODY_TOL": float(
+        os.getenv(
+            "BODY_TOL",
+            "0.35"
+        )
+    ),
+
+    "RANGE_TOL": float(
+        os.getenv(
+            "RANGE_TOL",
+            "0.35"
+        )
+    ),
+
+    "WICK_TOL": float(
+        os.getenv(
+            "WICK_TOL",
+            "0.35"
+        )
+    ),
+
+    "STRUCT_TOL": float(
+        os.getenv(
+            "STRUCT_TOL",
+            "0.50"
+        )
+    ),
+
+    "DIST_TOL": float(
+        os.getenv(
+            "DIST_TOL",
+            "0.50"
+        )
+    ),
 
     "TIME_BUCKET_MINUTES": int(
-        os.getenv("TIME_BUCKET_MINUTES", "60")
+        os.getenv(
+            "TIME_BUCKET_MINUTES",
+            "60"
+        )
     ),
+
     "TIME_MIN_SAMPLES": int(
-        os.getenv("TIME_MIN_SAMPLES", "20")
+        os.getenv(
+            "TIME_MIN_SAMPLES",
+            "20"
+        )
     ),
+
     "TIME_MIN_GOOD_PCT": float(
-        os.getenv("TIME_MIN_GOOD_PCT", "0.20")
+        os.getenv(
+            "TIME_MIN_GOOD_PCT",
+            "0.20"
+        )
     ),
 
     "MAX_CONSECUTIVE_LOSSES": int(
-        os.getenv("MAX_CONSECUTIVE_LOSSES", "10")
+        os.getenv(
+            "MAX_CONSECUTIVE_LOSSES",
+            "10"
+        )
     ),
 
     "REPORT_HOUR": int(
-        os.getenv("REPORT_HOUR", "18")
+        os.getenv(
+            "REPORT_HOUR",
+            "18"
+        )
     ),
+
     "DIAGNOSTICS_HOUR": int(
-        os.getenv("DIAGNOSTICS_HOUR", "9")
+        os.getenv(
+            "DIAGNOSTICS_HOUR",
+            "9"
+        )
     ),
 
     "SOCKET_TIMEOUT_MIN": int(
-        os.getenv("SOCKET_TIMEOUT_MIN", "30")
+        os.getenv(
+            "SOCKET_TIMEOUT_MIN",
+            "30"
+        )
     ),
 
     "MAX_DAILY_LOSS_PCT": float(
-        os.getenv("MAX_DAILY_LOSS_PCT", "0.15")
+        os.getenv(
+            "MAX_DAILY_LOSS_PCT",
+            "0.15"
+        )
     ),
 
     "CHART_CANDLES": int(
-        os.getenv("CHART_CANDLES", "100")
+        os.getenv(
+            "CHART_CANDLES",
+            "100"
+        )
     ),
 
     "HISTORY_LIMIT": int(
-        os.getenv("HISTORY_LIMIT", "1000")
+        os.getenv(
+            "HISTORY_LIMIT",
+            "1000"
+        )
     ),
 
     "MAX_HISTORY_CANDIDATES": int(
-        os.getenv("MAX_HISTORY_CANDIDATES", "5000")
+        os.getenv(
+            "MAX_HISTORY_CANDIDATES",
+            "5000"
+        )
     ),
 }
 
@@ -162,7 +344,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-log = logging.getLogger("EngulfingTrend")
+log = logging.getLogger(
+    "EngulfingTrend"
+)
 
 
 # ============================================================
@@ -170,10 +354,14 @@ log = logging.getLogger("EngulfingTrend")
 # ============================================================
 
 TD_BASE = "https://api.twelvedata.com"
-TD_WS = "wss://ws.twelvedata.com/v1/quotes/price"
+
+TD_WS = (
+    "wss://ws.twelvedata.com/v1/quotes/price"
+)
 
 
 def td_interval(interval):
+
     mapping = {
         "1m": "1min",
         "5m": "5min",
@@ -186,10 +374,15 @@ def td_interval(interval):
         "8h": "8h",
         "1d": "1day",
     }
-    return mapping.get(interval, interval)
+
+    return mapping.get(
+        interval,
+        interval
+    )
 
 
 def interval_seconds(interval):
+
     mapping = {
         "1m": 60,
         "5m": 300,
@@ -203,53 +396,91 @@ def interval_seconds(interval):
         "1d": 86400,
     }
 
-    return mapping.get(interval, 60)
+    return mapping.get(
+        interval,
+        60
+    )
 
 
 def normalize_symbol(symbol):
+
     symbol = symbol.strip().upper()
 
     aliases = {
         "GOLD": "XAU/USD",
         "XAUUSD": "XAU/USD",
+
         "EURUSD": "EUR/USD",
         "GBPUSD": "GBP/USD",
+
         "USDJPY": "USD/JPY",
+
         "AUDUSD": "AUD/USD",
         "NZDUSD": "NZD/USD",
+
         "USDCAD": "USD/CAD",
         "USDCHF": "USD/CHF",
+
         "SP500": "SPX",
         "S&P500": "SPX",
         "S&P 500": "SPX",
     }
 
-    return aliases.get(symbol, symbol)
+    return aliases.get(
+        symbol,
+        symbol
+    )
 
 
 class TwelveData:
-    def __init__(self, api_key):
+
+    def __init__(
+        self,
+        api_key
+    ):
+
         self.api_key = api_key
+
         self.session = None
 
-        # Twelve Data Basic limit:
+        # ----------------------------------------------------
+        # Twelve Data Basic:
         # 8 credits/minute.
-        # We intentionally use 7/minute as safety margin.
+        #
+        # We intentionally use 5/minute to leave
+        # additional safety margin.
+        # ----------------------------------------------------
+
         self.request_times = []
+
         self.request_lock = asyncio.Lock()
 
+        self.max_requests_per_minute = 5
+
     async def start(self):
+
         if self.session is None:
+
             self.session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=60)
+                timeout=aiohttp.ClientTimeout(
+                    total=60
+                )
             )
 
     async def close(self):
+
         if self.session:
+
             await self.session.close()
+
             self.session = None
 
-    async def request(self, endpoint, params):
+    async def request(
+        self,
+        endpoint,
+        params
+    ):
+
         await self.start()
 
         # ----------------------------------------------------
@@ -268,13 +499,23 @@ class TwelveData:
                     if now - t < 60
                 ]
 
-                if len(self.request_times) < 7:
-                    self.request_times.append(now)
+                if (
+                    len(self.request_times)
+                    < self.max_requests_per_minute
+                ):
+
+                    self.request_times.append(
+                        now
+                    )
+
                     break
 
                 wait_time = (
                     60
-                    - (now - self.request_times[0])
+                    - (
+                        now
+                        - self.request_times[0]
+                    )
                     + 0.5
                 )
 
@@ -285,13 +526,21 @@ class TwelveData:
                 )
 
                 await asyncio.sleep(
-                    max(wait_time, 1)
+                    max(
+                        wait_time,
+                        1
+                    )
                 )
 
-        params = dict(params)
+        params = dict(
+            params
+        )
+
         params["apikey"] = self.api_key
 
-        url = f"{TD_BASE}/{endpoint}"
+        url = (
+            f"{TD_BASE}/{endpoint}"
+        )
 
         # ----------------------------------------------------
         # RETRY
@@ -314,15 +563,20 @@ class TwelveData:
 
                     if r.status == 429:
 
-                        retry_after = r.headers.get(
-                            "Retry-After"
+                        retry_after = (
+                            r.headers.get(
+                                "Retry-After"
+                            )
                         )
 
                         try:
+
                             wait = float(
                                 retry_after
                             )
+
                         except Exception:
+
                             wait = 65
 
                         log.warning(
@@ -334,7 +588,10 @@ class TwelveData:
                         )
 
                         await asyncio.sleep(
-                            max(wait, 60)
+                            max(
+                                wait,
+                                60
+                            )
                         )
 
                         continue
@@ -344,9 +601,11 @@ class TwelveData:
                     # ------------------------------------------------
 
                     if r.status != 200:
+
                         raise RuntimeError(
                             f"Twelve Data HTTP "
-                            f"{r.status}: {text[:500]}"
+                            f"{r.status}: "
+                            f"{text[:500]}"
                         )
 
                     # ------------------------------------------------
@@ -354,12 +613,17 @@ class TwelveData:
                     # ------------------------------------------------
 
                     try:
-                        data = json.loads(text)
+
+                        data = json.loads(
+                            text
+                        )
 
                     except Exception:
+
                         raise RuntimeError(
                             "Invalid Twelve Data "
-                            f"response: {text[:500]}"
+                            f"response: "
+                            f"{text[:500]}"
                         )
 
                     # ------------------------------------------------
@@ -367,8 +631,13 @@ class TwelveData:
                     # ------------------------------------------------
 
                     if (
-                        isinstance(data, dict)
-                        and data.get("status") == "error"
+                        isinstance(
+                            data,
+                            dict
+                        )
+                        and data.get(
+                            "status"
+                        ) == "error"
                     ):
 
                         message = data.get(
@@ -377,9 +646,14 @@ class TwelveData:
                         )
 
                         if (
-                            "limit" in message.lower()
-                            or "credits" in message.lower()
-                            or "too many" in message.lower()
+                            "limit"
+                            in message.lower()
+                            or
+                            "credits"
+                            in message.lower()
+                            or
+                            "too many"
+                            in message.lower()
                         ):
 
                             log.warning(
@@ -387,7 +661,9 @@ class TwelveData:
                                 message
                             )
 
-                            await asyncio.sleep(65)
+                            await asyncio.sleep(
+                                65
+                            )
 
                             continue
 
@@ -400,10 +676,14 @@ class TwelveData:
             except aiohttp.ClientError as e:
 
                 if attempt >= 4:
+
                     raise
 
-                wait = 5 * (
-                    attempt + 1
+                wait = (
+                    5
+                    * (
+                        attempt + 1
+                    )
                 )
 
                 log.warning(
@@ -413,7 +693,9 @@ class TwelveData:
                     wait
                 )
 
-                await asyncio.sleep(wait)
+                await asyncio.sleep(
+                    wait
+                )
 
         raise RuntimeError(
             "Twelve Data request failed "
@@ -428,29 +710,50 @@ class TwelveData:
         start_date=None,
         end_date=None,
     ):
+
         params = {
-            "symbol": normalize_symbol(symbol),
-            "interval": td_interval(interval),
+            "symbol": normalize_symbol(
+                symbol
+            ),
+
+            "interval": td_interval(
+                interval
+            ),
+
             "outputsize": outputsize,
+
             "format": "JSON",
         }
 
         if start_date:
-            params["start_date"] = start_date
+
+            params["start_date"] = (
+                start_date
+            )
 
         if end_date:
-            params["end_date"] = end_date
+
+            params["end_date"] = (
+                end_date
+            )
 
         return await self.request(
             "time_series",
             params
         )
 
-    async def price_stream(self, symbols):
+    async def price_stream(
+        self,
+        symbols
+    ):
+
         if not symbols:
+
             return
 
-        url = f"{TD_WS}?apikey={self.api_key}"
+        url = (
+            f"{TD_WS}?apikey={self.api_key}"
+        )
 
         async with websockets.connect(
             url,
@@ -468,8 +771,11 @@ class TwelveData:
             await ws.send(
                 json.dumps({
                     "action": "subscribe",
+
                     "params": {
-                        "symbols": subscribe_symbols
+                        "symbols": (
+                            subscribe_symbols
+                        )
                     }
                 })
             )
@@ -480,6 +786,7 @@ class TwelveData:
             )
 
             async for raw in ws:
+
                 yield raw
 
 
@@ -488,23 +795,46 @@ class TwelveData:
 # ============================================================
 
 class TG:
-    def __init__(self, token, chat_id):
-        self.token = token
-        self.chat_id = chat_id
-        self.bot = Bot(token=token) if token else None
 
-    async def send(self, text):
-        if not self.bot or not self.chat_id:
+    def __init__(
+        self,
+        token,
+        chat_id
+    ):
+
+        self.token = token
+
+        self.chat_id = chat_id
+
+        self.bot = (
+            Bot(token=token)
+            if token
+            else None
+        )
+
+    async def send(
+        self,
+        text
+    ):
+
+        if (
+            not self.bot
+            or not self.chat_id
+        ):
+
             return
 
         try:
+
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
+
         except Exception as e:
+
             log.error(
                 "Telegram send error: %s",
                 e
@@ -515,20 +845,33 @@ class TG:
         image_bytes,
         caption=""
     ):
-        if not self.bot or not self.chat_id:
+
+        if (
+            not self.bot
+            or not self.chat_id
+        ):
+
             return
 
         try:
+
             await self.bot.send_photo(
                 chat_id=self.chat_id,
+
                 photo=InputFile(
-                    io.BytesIO(image_bytes),
+                    io.BytesIO(
+                        image_bytes
+                    ),
                     filename="chart.png"
                 ),
+
                 caption=caption[:1024],
+
                 parse_mode=ParseMode.HTML,
             )
+
         except Exception as e:
+
             log.error(
                 "Telegram chart error: %s",
                 e
@@ -546,6 +889,7 @@ TG_CLIENT = TG(
 # ============================================================
 
 def candle_range(c):
+
     return max(
         float(c["high"])
         - float(c["low"]),
@@ -554,6 +898,7 @@ def candle_range(c):
 
 
 def body_size(c):
+
     return abs(
         float(c["close"])
         - float(c["open"])
@@ -561,6 +906,7 @@ def body_size(c):
 
 
 def body_ratio(c):
+
     return (
         body_size(c)
         / candle_range(c)
@@ -568,28 +914,53 @@ def body_ratio(c):
 
 
 def upper_wick_ratio(c):
-    h = float(c["high"])
-    o = float(c["open"])
-    cl = float(c["close"])
+
+    h = float(
+        c["high"]
+    )
+
+    o = float(
+        c["open"]
+    )
+
+    cl = float(
+        c["close"]
+    )
 
     return max(
         0.0,
-        h - max(o, cl)
+        h - max(
+            o,
+            cl
+        )
     ) / candle_range(c)
 
 
 def lower_wick_ratio(c):
-    l = float(c["low"])
-    o = float(c["open"])
-    cl = float(c["close"])
+
+    l = float(
+        c["low"]
+    )
+
+    o = float(
+        c["open"]
+    )
+
+    cl = float(
+        c["close"]
+    )
 
     return max(
         0.0,
-        min(o, cl) - l
+        min(
+            o,
+            cl
+        ) - l
     ) / candle_range(c)
 
 
 def close_position(c):
+
     return (
         (
             float(c["close"])
@@ -600,9 +971,11 @@ def close_position(c):
 
 
 def signed_body(c):
+
     r = candle_range(c)
 
     if r <= 0:
+
         return 0.0
 
     return (
@@ -619,7 +992,9 @@ def signed_body(c):
 # ============================================================
 
 def structure_features(candles):
+
     if len(candles) < 3:
+
         return {
             "trend": 0.0,
             "hh": 0.0,
@@ -642,19 +1017,30 @@ def structure_features(candles):
     ]
 
     trend = (
-        float(recent[-1]["close"])
-        - float(recent[0]["open"])
+        float(
+            recent[-1]["close"]
+        )
+        - float(
+            recent[0]["open"]
+        )
     )
 
-    avg_range = sum(
-        candle_range(x)
-        for x in recent
-    ) / max(len(recent), 1)
+    avg_range = (
+        sum(
+            candle_range(x)
+            for x in recent
+        )
+        / max(
+            len(recent),
+            1
+        )
+    )
 
     trend_norm = (
         trend
         / max(
-            avg_range * len(recent),
+            avg_range
+            * len(recent),
             1e-12
         )
     )
@@ -664,18 +1050,37 @@ def structure_features(candles):
     lh = 0
     ll = 0
 
-    for i in range(1, len(recent)):
+    for i in range(
+        1,
+        len(recent)
+    ):
 
-        if highs[i] > highs[i - 1]:
+        if (
+            highs[i]
+            > highs[i - 1]
+        ):
+
             hh += 1
 
-        if lows[i] > lows[i - 1]:
+        if (
+            lows[i]
+            > lows[i - 1]
+        ):
+
             hl += 1
 
-        if highs[i] < highs[i - 1]:
+        if (
+            highs[i]
+            < highs[i - 1]
+        ):
+
             lh += 1
 
-        if lows[i] < lows[i - 1]:
+        if (
+            lows[i]
+            < lows[i - 1]
+        ):
+
             ll += 1
 
     last = recent[-1]
@@ -686,17 +1091,47 @@ def structure_features(candles):
             - min(lows)
         )
         / max(
-            max(highs) - min(lows),
+            max(highs)
+            - min(lows),
             1e-12
         )
     )
 
     return {
         "trend": trend_norm,
-        "hh": hh / max(len(recent) - 1, 1),
-        "hl": hl / max(len(recent) - 1, 1),
-        "lh": lh / max(len(recent) - 1, 1),
-        "ll": ll / max(len(recent) - 1, 1),
+
+        "hh": (
+            hh
+            / max(
+                len(recent) - 1,
+                1
+            )
+        ),
+
+        "hl": (
+            hl
+            / max(
+                len(recent) - 1,
+                1
+            )
+        ),
+
+        "lh": (
+            lh
+            / max(
+                len(recent) - 1,
+                1
+            )
+        ),
+
+        "ll": (
+            ll
+            / max(
+                len(recent) - 1,
+                1
+            )
+        ),
+
         "range_pos": range_pos,
     }
 
@@ -705,18 +1140,38 @@ def structure_features(candles):
 # ENGULFING
 # ============================================================
 
-def detect_engulfing(candles, idx):
+def detect_engulfing(
+    candles,
+    idx
+):
+
     if idx < 1:
+
         return None
 
-    prev = candles[idx - 1]
-    cur = candles[idx]
+    prev = candles[
+        idx - 1
+    ]
 
-    po = float(prev["open"])
-    pc = float(prev["close"])
+    cur = candles[
+        idx
+    ]
 
-    co = float(cur["open"])
-    cc = float(cur["close"])
+    po = float(
+        prev["open"]
+    )
+
+    pc = float(
+        prev["close"]
+    )
+
+    co = float(
+        cur["open"]
+    )
+
+    cc = float(
+        cur["close"]
+    )
 
     if (
         pc < po
@@ -724,6 +1179,7 @@ def detect_engulfing(candles, idx):
         and co <= pc
         and cc >= po
     ):
+
         return "BUY"
 
     if (
@@ -732,6 +1188,7 @@ def detect_engulfing(candles, idx):
         and co >= pc
         and cc <= po
     ):
+
         return "SELL"
 
     return None
@@ -746,10 +1203,13 @@ def make_features(
     idx,
     signal
 ):
+
     start = max(
         0,
         idx
-        - CONFIG["HISTORY_LOOKBACK_CANDLES"]
+        - CONFIG[
+            "HISTORY_LOOKBACK_CANDLES"
+        ]
         + 1
     )
 
@@ -758,9 +1218,12 @@ def make_features(
     ]
 
     if not sample:
+
         return None
 
-    current = candles[idx]
+    current = candles[
+        idx
+    ]
 
     ranges = [
         candle_range(x)
@@ -769,7 +1232,10 @@ def make_features(
 
     avg_range = (
         sum(ranges)
-        / max(len(ranges), 1)
+        / max(
+            len(ranges),
+            1
+        )
     )
 
     sf = structure_features(
@@ -779,27 +1245,40 @@ def make_features(
     return {
         "signal": signal,
 
-        "body": body_ratio(current),
+        "body": body_ratio(
+            current
+        ),
 
         "range": (
             candle_range(current)
-            / max(avg_range, 1e-12)
+            / max(
+                avg_range,
+                1e-12
+            )
         ),
 
-        "upper_wick": upper_wick_ratio(
-            current
+        "upper_wick": (
+            upper_wick_ratio(
+                current
+            )
         ),
 
-        "lower_wick": lower_wick_ratio(
-            current
+        "lower_wick": (
+            lower_wick_ratio(
+                current
+            )
         ),
 
-        "close_position": close_position(
-            current
+        "close_position": (
+            close_position(
+                current
+            )
         ),
 
-        "signed_body": signed_body(
-            current
+        "signed_body": (
+            signed_body(
+                current
+            )
         ),
 
         "trend": sf["trend"],
@@ -827,17 +1306,31 @@ def make_features(
 # DISTANCE
 # ============================================================
 
-def normalized_distance(a, b):
-    if a is None or b is None:
+def normalized_distance(
+    a,
+    b
+):
+
+    if (
+        a is None
+        or b is None
+    ):
+
         return 999.0
 
     return abs(
-        float(a) - float(b)
+        float(a)
+        - float(b)
     )
 
 
-def feature_distance(a, b):
+def feature_distance(
+    a,
+    b
+):
+
     if not a or not b:
+
         return 999.0
 
     dist = 0.0
@@ -903,8 +1396,14 @@ def feature_distance(a, b):
 
         dist += min(
             normalized_distance(
-                a.get(key, 0),
-                b.get(key, 0)
+                a.get(
+                    key,
+                    0
+                ),
+                b.get(
+                    key,
+                    0
+                )
             )
             / max(
                 CONFIG["STRUCT_TOL"],
@@ -925,10 +1424,16 @@ def evaluate_historical_trade(
     idx,
     signal,
 ):
-    if idx >= len(candles) - 1:
+
+    if idx >= (
+        len(candles) - 1
+    ):
+
         return None
 
-    setup = candles[idx]
+    setup = candles[
+        idx
+    ]
 
     entry = float(
         setup["close"]
@@ -940,14 +1445,18 @@ def evaluate_historical_trade(
             setup["low"]
         )
 
-        risk = entry - sl
+        risk = (
+            entry - sl
+        )
 
         if risk <= 0:
+
             return None
 
         tp = (
             entry
-            + risk * CONFIG["A_TP_R"]
+            + risk
+            * CONFIG["A_TP_R"]
         )
 
         for j in range(
@@ -957,20 +1466,38 @@ def evaluate_historical_trade(
 
             c = candles[j]
 
-            h = float(c["high"])
-            l = float(c["low"])
+            h = float(
+                c["high"]
+            )
 
-            hit_sl = l <= sl
-            hit_tp = h >= tp
+            l = float(
+                c["low"]
+            )
 
-            if hit_sl and hit_tp:
+            hit_sl = (
+                l <= sl
+            )
+
+            hit_tp = (
+                h >= tp
+            )
+
+            if (
+                hit_sl
+                and hit_tp
+            ):
+
                 return -1.0
 
             if hit_sl:
+
                 return -1.0
 
             if hit_tp:
-                return CONFIG["A_TP_R"]
+
+                return CONFIG[
+                    "A_TP_R"
+                ]
 
     else:
 
@@ -978,14 +1505,18 @@ def evaluate_historical_trade(
             setup["high"]
         )
 
-        risk = sl - entry
+        risk = (
+            sl - entry
+        )
 
         if risk <= 0:
+
             return None
 
         tp = (
             entry
-            - risk * CONFIG["A_TP_R"]
+            - risk
+            * CONFIG["A_TP_R"]
         )
 
         for j in range(
@@ -995,20 +1526,38 @@ def evaluate_historical_trade(
 
             c = candles[j]
 
-            h = float(c["high"])
-            l = float(c["low"])
+            h = float(
+                c["high"]
+            )
 
-            hit_sl = h >= sl
-            hit_tp = l <= tp
+            l = float(
+                c["low"]
+            )
 
-            if hit_sl and hit_tp:
+            hit_sl = (
+                h >= sl
+            )
+
+            hit_tp = (
+                l <= tp
+            )
+
+            if (
+                hit_sl
+                and hit_tp
+            ):
+
                 return -1.0
 
             if hit_sl:
+
                 return -1.0
 
             if hit_tp:
-                return CONFIG["A_TP_R"]
+
+                return CONFIG[
+                    "A_TP_R"
+                ]
 
     return 0.0
 
@@ -1020,6 +1569,7 @@ def evaluate_historical_trade(
 class HistoricalDB:
 
     def __init__(self):
+
         self.rows = {}
 
     def key(
@@ -1027,8 +1577,11 @@ class HistoricalDB:
         symbol,
         interval
     ):
+
         return (
-            normalize_symbol(symbol),
+            normalize_symbol(
+                symbol
+            ),
             interval
         )
 
@@ -1037,6 +1590,7 @@ class HistoricalDB:
         symbol,
         interval
     ):
+
         key = self.key(
             symbol,
             interval
@@ -1056,12 +1610,15 @@ class HistoricalDB:
             )
 
             if bucket is None:
+
                 continue
 
             buckets.setdefault(
                 bucket,
                 []
-            ).append(row)
+            ).append(
+                row
+            )
 
         for row in rows:
 
@@ -1070,14 +1627,19 @@ class HistoricalDB:
             )
 
             if bucket not in buckets:
+
                 continue
 
-            group = buckets[bucket]
+            group = buckets[
+                bucket
+            ]
 
             results = [
                 x["result"]
                 for x in group
-                if x.get("result") is not None
+                if x.get(
+                    "result"
+                ) is not None
             ]
 
             if len(results) < CONFIG[
@@ -1111,7 +1673,9 @@ class HistoricalDB:
         result,
         timestamp,
     ):
+
         if features is None:
+
             return
 
         dt = pd.to_datetime(
@@ -1121,6 +1685,7 @@ class HistoricalDB:
         )
 
         if pd.isna(dt):
+
             return
 
         minutes = (
@@ -1152,7 +1717,9 @@ class HistoricalDB:
         self.rows.setdefault(
             key,
             []
-        ).append(row)
+        ).append(
+            row
+        )
 
     def similar(
         self,
@@ -1160,6 +1727,7 @@ class HistoricalDB:
         interval,
         features,
     ):
+
         key = self.key(
             symbol,
             interval
@@ -1177,6 +1745,7 @@ class HistoricalDB:
             if row.get(
                 "features"
             ) is None:
+
                 continue
 
             if (
@@ -1187,6 +1756,7 @@ class HistoricalDB:
                     "signal"
                 )
             ):
+
                 continue
 
             d = feature_distance(
@@ -1222,6 +1792,7 @@ class HistoricalDB:
         interval,
         features,
     ):
+
         candidates = self.similar(
             symbol,
             interval,
@@ -1234,25 +1805,36 @@ class HistoricalDB:
 
             return {
                 "ok": False,
+
                 "reason": (
-                    f"similar={len(candidates)} "
-                    f"< {CONFIG['MIN_SIMILAR']}"
+                    f"similar="
+                    f"{len(candidates)} "
+                    f"< "
+                    f"{CONFIG['MIN_SIMILAR']}"
                 ),
-                "count": len(candidates),
+
+                "count": len(
+                    candidates
+                ),
+
                 "good_pct": 0.0,
             }
 
         results = [
             x["result"]
             for x in candidates
-            if x.get("result") is not None
+            if x.get(
+                "result"
+            ) is not None
         ]
 
         if not results:
 
             return {
                 "ok": False,
-                "reason": "no historical results",
+                "reason": (
+                    "no historical results"
+                ),
                 "count": 0,
                 "good_pct": 0.0,
             }
@@ -1334,11 +1916,16 @@ class HistoricalDB:
 
                     return {
                         "ok": False,
+
                         "reason": (
                             f"time filter "
                             f"{time_good_pct:.2%}"
                         ),
-                        "count": len(results),
+
+                        "count": len(
+                            results
+                        ),
+
                         "good_pct": good_pct,
                     }
 
@@ -1351,12 +1938,20 @@ class HistoricalDB:
 
         return {
             "ok": ok,
+
             "reason": (
                 "passed"
                 if ok
-                else f"good={good_pct:.2%}"
+                else (
+                    f"good="
+                    f"{good_pct:.2%}"
+                )
             ),
-            "count": len(results),
+
+            "count": len(
+                results
+            ),
+
             "good_pct": good_pct,
         }
 
@@ -1365,7 +1960,10 @@ class HistoricalDB:
 # DATA CONVERSION
 # ============================================================
 
-def td_values_to_candles(values):
+def td_values_to_candles(
+    values
+):
+
     candles = []
 
     for row in values or []:
@@ -1378,33 +1976,44 @@ def td_values_to_candles(values):
             )
 
             candles.append({
-                "timestamp": dt.to_pydatetime(),
+                "timestamp": (
+                    dt.to_pydatetime()
+                ),
+
                 "open": float(
                     row["open"]
                 ),
+
                 "high": float(
                     row["high"]
                 ),
+
                 "low": float(
                     row["low"]
                 ),
+
                 "close": float(
                     row["close"]
                 ),
+
                 "volume": float(
                     row.get(
                         "volume",
                         0
-                    ) or 0
+                    )
+                    or 0
                 ),
+
                 "closed": True,
             })
 
         except Exception:
+
             continue
 
     candles.sort(
-        key=lambda x: x["timestamp"]
+        key=lambda x:
+        x["timestamp"]
     )
 
     return candles
@@ -1419,6 +2028,7 @@ async def download_6m_history(
     symbol,
     interval,
 ):
+
     symbol = normalize_symbol(
         symbol
     )
@@ -1449,9 +2059,12 @@ async def download_6m_history(
 
     max_loops = 200
 
-    for _ in range(max_loops):
+    for _ in range(
+        max_loops
+    ):
 
         if current_end <= start_dt:
+
             break
 
         try:
@@ -1460,8 +2073,12 @@ async def download_6m_history(
                 symbol=symbol,
                 interval=interval,
                 outputsize=5000,
-                start_date=start_dt.isoformat(),
-                end_date=current_end.isoformat(),
+                start_date=(
+                    start_dt.isoformat()
+                ),
+                end_date=(
+                    current_end.isoformat()
+                ),
             )
 
         except Exception as e:
@@ -1481,6 +2098,7 @@ async def download_6m_history(
         )
 
         if not values:
+
             break
 
         batch = td_values_to_candles(
@@ -1488,6 +2106,7 @@ async def download_6m_history(
         )
 
         if not batch:
+
             break
 
         all_rows.extend(
@@ -1500,6 +2119,7 @@ async def download_6m_history(
         )
 
         if earliest <= start_dt:
+
             break
 
         new_end = (
@@ -1507,6 +2127,7 @@ async def download_6m_history(
         )
 
         if new_end >= current_end:
+
             break
 
         current_end = new_end
@@ -1520,7 +2141,9 @@ async def download_6m_history(
 
         # Small delay in addition to
         # the global API limiter.
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(
+            0.5
+        )
 
     unique = {}
 
@@ -1535,7 +2158,8 @@ async def download_6m_history(
     )
 
     candles.sort(
-        key=lambda x: x["timestamp"]
+        key=lambda x:
+        x["timestamp"]
     )
 
     return candles
@@ -1551,6 +2175,7 @@ async def build_history_db(
     symbol,
     interval,
 ):
+
     candles = await download_6m_history(
         client,
         symbol,
@@ -1583,6 +2208,7 @@ async def build_history_db(
         )
 
         if not signal:
+
             continue
 
         features = make_features(
@@ -1592,19 +2218,23 @@ async def build_history_db(
         )
 
         if not features:
+
             continue
 
-        features["timestamp"] = candles[
-            idx
-        ]["timestamp"]
+        features["timestamp"] = (
+            candles[idx]["timestamp"]
+        )
 
-        result = evaluate_historical_trade(
-            candles,
-            idx,
-            signal
+        result = (
+            evaluate_historical_trade(
+                candles,
+                idx,
+                signal
+            )
         )
 
         if result is None:
+
             continue
 
         db.add(
@@ -1630,6 +2260,23 @@ async def build_history_db(
         added
     )
 
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Save the already downloaded history in memory.
+    #
+    # preload_current() will use this cache instead of
+    # making another Twelve Data API request.
+    # --------------------------------------------------------
+
+    HISTORY_CACHE[
+        (
+            normalize_symbol(symbol),
+            interval
+        )
+    ] = candles[
+        -CONFIG["PRELOAD_CANDLES"]:
+    ]
+
     return candles
 
 
@@ -1645,7 +2292,9 @@ def make_chart(
     exit_price=None,
     signal=None,
 ):
+
     if not candles:
+
         return None
 
     data = candles[
@@ -1658,12 +2307,25 @@ def make_chart(
 
     width = 0.6
 
-    for i, c in enumerate(data):
+    for i, c in enumerate(
+        data
+    ):
 
-        o = float(c["open"])
-        h = float(c["high"])
-        l = float(c["low"])
-        cl = float(c["close"])
+        o = float(
+            c["open"]
+        )
+
+        h = float(
+            c["high"]
+        )
+
+        l = float(
+            c["low"]
+        )
+
+        cl = float(
+            c["close"]
+        )
 
         ax.plot(
             [i, i],
@@ -1672,11 +2334,20 @@ def make_chart(
         )
 
         if cl >= o:
+
             bottom = o
-            height = cl - o
+
+            height = (
+                cl - o
+            )
+
         else:
+
             bottom = cl
-            height = o - cl
+
+            height = (
+                o - cl
+            )
 
         rect = plt.Rectangle(
             (
@@ -1691,7 +2362,9 @@ def make_chart(
             fill=False
         )
 
-        ax.add_patch(rect)
+        ax.add_patch(
+            rect
+        )
 
     if entry is not None:
 
@@ -1712,7 +2385,8 @@ def make_chart(
         )
 
     ax.set_title(
-        f"{symbol} | {interval} | "
+        f"{symbol} | "
+        f"{interval} | "
         f"{signal or ''}"
     )
 
@@ -1733,7 +2407,9 @@ def make_chart(
         dpi=150
     )
 
-    plt.close(fig)
+    plt.close(
+        fig
+    )
 
     buf.seek(0)
 
@@ -1752,6 +2428,7 @@ class Engine:
         interval,
         history_db,
     ):
+
         self.symbol = normalize_symbol(
             symbol
         )
@@ -1760,8 +2437,13 @@ class Engine:
 
         self.db = history_db
 
-        self.balance = CONFIG["BALANCE"]
-        self.start_balance = self.balance
+        self.balance = CONFIG[
+            "BALANCE"
+        ]
+
+        self.start_balance = (
+            self.balance
+        )
 
         self.positions = []
 
@@ -1777,19 +2459,24 @@ class Engine:
         }
 
         self.total_comm = 0.0
+
         self.gross_pnl = 0.0
 
         self.consecutive_losses = 0
 
         self.self_blocked = False
 
-        self.day_start_balance = self.balance
+        self.day_start_balance = (
+            self.balance
+        )
 
         self.day = datetime.now(
             timezone.utc
         ).date()
 
-        self.last_candle_time = time.time()
+        self.last_candle_time = (
+            time.time()
+        )
 
         self.pending = {}
 
@@ -1810,9 +2497,12 @@ class Engine:
             )
 
             self.consecutive_losses = 0
+
             self.self_blocked = False
 
-    def daily_loss_limit_hit(self):
+    def daily_loss_limit_hit(
+        self
+    ):
 
         loss = (
             self.day_start_balance
@@ -1833,15 +2523,20 @@ class Engine:
         self.reset_day()
 
         if self.self_blocked:
+
             return False
 
         if self.daily_loss_limit_hit():
+
             return False
 
         if (
             len(self.positions)
-            >= CONFIG["MAX_OPEN_POS"]
+            >= CONFIG[
+                "MAX_OPEN_POS"
+            ]
         ):
+
             return False
 
         return True
@@ -1855,7 +2550,9 @@ class Engine:
 
         risk_money = (
             self.balance
-            * CONFIG["RISK_PCT"]
+            * CONFIG[
+                "RISK_PCT"
+            ]
             * part_risk_ratio
         )
 
@@ -1864,6 +2561,7 @@ class Engine:
         )
 
         if sl_dist <= 0:
+
             return 0.0
 
         lot = (
@@ -1889,29 +2587,43 @@ class Engine:
     ):
 
         if signal == "BUY":
-            risk = entry - sl
+
+            risk = (
+                entry - sl
+            )
+
         else:
-            risk = sl - entry
+
+            risk = (
+                sl - entry
+            )
 
         if risk <= 0:
+
             return None
 
         lot_a = self.calc_lot(
             entry,
             sl,
-            CONFIG["PART_RISK_RATIO"]
+            CONFIG[
+                "PART_RISK_RATIO"
+            ]
         )
 
         lot_b = self.calc_lot(
             entry,
             sl,
-            CONFIG["PART_RISK_RATIO"]
+            CONFIG[
+                "PART_RISK_RATIO"
+            ]
         )
 
         if lot_a <= 0:
+
             return None
 
         p = {
+
             "id": (
                 f"{self.symbol}-"
                 f"{self.interval}-"
@@ -1919,27 +2631,37 @@ class Engine:
             ),
 
             "symbol": self.symbol,
+
             "interval": self.interval,
 
             "signal": signal,
 
             "entry": entry,
+
             "sl": sl,
 
             "initial_sl": sl,
+
             "risk": risk,
 
-            "lot": lot_a + lot_b,
+            "lot": (
+                lot_a
+                + lot_b
+            ),
 
             "lot_a": lot_a,
+
             "lot_b": lot_b,
 
             "tp_a": (
                 entry
-                + risk * CONFIG["A_TP_R"]
+                + risk
+                * CONFIG["A_TP_R"]
                 if signal == "BUY"
-                else entry
-                - risk * CONFIG["A_TP_R"]
+                else
+                entry
+                - risk
+                * CONFIG["A_TP_R"]
             ),
 
             "tp_b": None,
@@ -1962,14 +2684,22 @@ class Engine:
         open_comm = (
             p["lot"]
             * p["entry"]
-            * CONFIG["COMM_RATE"]
+            * CONFIG[
+                "COMM_RATE"
+            ]
         )
 
-        p["commission"] += open_comm
+        p["commission"] += (
+            open_comm
+        )
 
-        self.total_comm += open_comm
+        self.total_comm += (
+            open_comm
+        )
 
-        self.positions.append(p)
+        self.positions.append(
+            p
+        )
 
         return p
 
@@ -1982,6 +2712,7 @@ class Engine:
     ):
 
         if p not in self.positions:
+
             return
 
         lot = (
@@ -2006,45 +2737,75 @@ class Engine:
         close_comm = (
             lot
             * exit_price
-            * CONFIG["COMM_RATE"]
+            * CONFIG[
+                "COMM_RATE"
+            ]
         )
 
-        p["commission"] += close_comm
+        p["commission"] += (
+            close_comm
+        )
 
-        self.total_comm += close_comm
+        self.total_comm += (
+            close_comm
+        )
 
         net_pnl = (
             gross
             - close_comm
         )
 
-        self.balance += net_pnl
+        self.balance += (
+            net_pnl
+        )
 
-        self.gross_pnl += gross
+        self.gross_pnl += (
+            gross
+        )
 
-        p["gross"] += gross
+        p["gross"] += (
+            gross
+        )
 
         self.trades.append({
+
             "time": datetime.now(
                 timezone.utc
             ),
+
             "symbol": self.symbol,
+
             "interval": self.interval,
-            "signal": p["signal"],
-            "entry": p["entry"],
+
+            "signal": p[
+                "signal"
+            ],
+
+            "entry": p[
+                "entry"
+            ],
+
             "exit": exit_price,
+
             "pnl": net_pnl,
+
             "reason": reason,
         })
 
         if net_pnl > 0:
 
-            self.stats["wins"] += 1
+            self.stats[
+                "wins"
+            ] += 1
+
             self.consecutive_losses = 0
 
         elif net_pnl < 0:
 
-            self.stats["losses"] += 1
+            self.stats[
+                "losses"
+            ] += 1
+
             self.consecutive_losses += 1
 
         if (
@@ -2059,16 +2820,21 @@ class Engine:
             asyncio.create_task(
                 TG_CLIENT.send(
                     f"🛑 <b>SELF BLOCK</b>\n"
-                    f"{self.symbol} {self.interval}\n"
+                    f"{self.symbol} "
+                    f"{self.interval}\n"
                     f"{CONFIG['MAX_CONSECUTIVE_LOSSES']} "
                     f"consecutive losses."
                 )
             )
 
         try:
-            self.positions.remove(p)
+
+            self.positions.remove(
+                p
+            )
 
         except ValueError:
+
             pass
 
         return net_pnl
@@ -2080,14 +2846,23 @@ class Engine:
     ):
 
         if p not in self.positions:
+
             return
 
-        signal = p["signal"]
+        signal = p[
+            "signal"
+        ]
 
-        entry = p["entry"]
-        risk = p["risk"]
+        entry = p[
+            "entry"
+        ]
+
+        risk = p[
+            "risk"
+        ]
 
         if risk <= 0:
+
             return
 
         if signal == "BUY":
@@ -2101,7 +2876,9 @@ class Engine:
                 and price >= p["tp_a"]
             ):
 
-                old_lot = p["lot"]
+                old_lot = p[
+                    "lot"
+                ]
 
                 if old_lot > 0:
 
@@ -2119,15 +2896,20 @@ class Engine:
 
                     if p in self.positions:
 
-                        p["lot"] -= p["lot_a"]
+                        p["lot"] -= (
+                            p["lot_a"]
+                        )
 
                         p["lot_a"] = 0
 
-                        p["b_sl"] = entry
+                        p["b_sl"] = (
+                            entry
+                        )
 
             if (
                 p in self.positions
-                and r_now >= CONFIG["BE_AT_R"]
+                and r_now
+                >= CONFIG["BE_AT_R"]
             ):
 
                 p["b_sl"] = max(
@@ -2137,21 +2919,35 @@ class Engine:
 
             if (
                 p in self.positions
-                and r_now >= CONFIG["TRAIL_STEP_R"]
+                and r_now
+                >= CONFIG[
+                    "TRAIL_STEP_R"
+                ]
             ):
 
                 trail_r = min(
                     math.floor(
                         r_now
-                        / CONFIG["TRAIL_STEP_R"]
+                        / CONFIG[
+                            "TRAIL_STEP_R"
+                        ]
                     )
-                    * CONFIG["TRAIL_STEP_R"],
-                    CONFIG["MAX_TRAIL_R"]
+                    * CONFIG[
+                        "TRAIL_STEP_R"
+                    ],
+                    CONFIG[
+                        "MAX_TRAIL_R"
+                    ]
                 )
 
-                if trail_r > p["trail_r"]:
+                if (
+                    trail_r
+                    > p["trail_r"]
+                ):
 
-                    p["trail_r"] = trail_r
+                    p["trail_r"] = (
+                        trail_r
+                    )
 
                     new_sl = (
                         entry
@@ -2159,7 +2955,9 @@ class Engine:
                         * max(
                             0,
                             trail_r
-                            - CONFIG["TRAIL_STEP_R"]
+                            - CONFIG[
+                                "TRAIL_STEP_R"
+                            ]
                         )
                     )
 
@@ -2190,7 +2988,9 @@ class Engine:
                 and price <= p["tp_a"]
             ):
 
-                old_lot = p["lot"]
+                old_lot = p[
+                    "lot"
+                ]
 
                 if old_lot > 0:
 
@@ -2208,15 +3008,22 @@ class Engine:
 
                     if p in self.positions:
 
-                        p["lot"] -= p["lot_a"]
+                        p["lot"] -= (
+                            p["lot_a"]
+                        )
 
                         p["lot_a"] = 0
 
-                        p["b_sl"] = entry
+                        p["b_sl"] = (
+                            entry
+                        )
 
             if (
                 p in self.positions
-                and r_now >= CONFIG["BE_AT_R"]
+                and r_now
+                >= CONFIG[
+                    "BE_AT_R"
+                ]
             ):
 
                 p["b_sl"] = min(
@@ -2226,21 +3033,35 @@ class Engine:
 
             if (
                 p in self.positions
-                and r_now >= CONFIG["TRAIL_STEP_R"]
+                and r_now
+                >= CONFIG[
+                    "TRAIL_STEP_R"
+                ]
             ):
 
                 trail_r = min(
                     math.floor(
                         r_now
-                        / CONFIG["TRAIL_STEP_R"]
+                        / CONFIG[
+                            "TRAIL_STEP_R"
+                        ]
                     )
-                    * CONFIG["TRAIL_STEP_R"],
-                    CONFIG["MAX_TRAIL_R"]
+                    * CONFIG[
+                        "TRAIL_STEP_R"
+                    ],
+                    CONFIG[
+                        "MAX_TRAIL_R"
+                    ]
                 )
 
-                if trail_r > p["trail_r"]:
+                if (
+                    trail_r
+                    > p["trail_r"]
+                ):
 
-                    p["trail_r"] = trail_r
+                    p["trail_r"] = (
+                        trail_r
+                    )
 
                     new_sl = (
                         entry
@@ -2248,7 +3069,9 @@ class Engine:
                         * max(
                             0,
                             trail_r
-                            - CONFIG["TRAIL_STEP_R"]
+                            - CONFIG[
+                                "TRAIL_STEP_R"
+                            ]
                         )
                     )
 
@@ -2301,11 +3124,15 @@ class Engine:
 
         if not self.can_trade():
 
-            self.stats["blocked"] += 1
+            self.stats[
+                "blocked"
+            ] += 1
 
             return
 
-        self.stats["signals"] += 1
+        self.stats[
+            "signals"
+        ] += 1
 
         entry = float(
             candle["close"]
@@ -2330,22 +3157,28 @@ class Engine:
         )
 
         if signal == "BUY":
+
             sl -= buf
+
         else:
+
             sl += buf
 
         features = make_features(
             self.candles,
-            len(self.candles) - 1,
+            len(
+                self.candles
+            ) - 1,
             signal
         )
 
         if not features:
+
             return
 
-        features["timestamp"] = candle[
-            "timestamp"
-        ]
+        features["timestamp"] = (
+            candle["timestamp"]
+        )
 
         result = self.history_check(
             features
@@ -2370,6 +3203,7 @@ class Engine:
         )
 
         if not p:
+
             return
 
         msg = (
@@ -2412,7 +3246,9 @@ class Engine:
         candle,
     ):
 
-        self.last_candle_time = time.time()
+        self.last_candle_time = (
+            time.time()
+        )
 
         if not self.candles:
 
@@ -2422,14 +3258,18 @@ class Engine:
 
         else:
 
-            last = self.candles[-1]
+            last = self.candles[
+                -1
+            ]
 
             if (
                 last["timestamp"]
                 == candle["timestamp"]
             ):
 
-                self.candles[-1] = candle
+                self.candles[
+                    -1
+                ] = candle
 
             else:
 
@@ -2438,15 +3278,21 @@ class Engine:
                 )
 
         self.manage_positions(
-            float(candle["close"])
+            float(
+                candle["close"]
+            )
         )
 
-        if len(self.candles) < 2:
+        if len(
+            self.candles
+        ) < 2:
+
             return
 
-        idx = len(
-            self.candles
-        ) - 1
+        idx = (
+            len(self.candles)
+            - 1
+        )
 
         signal = detect_engulfing(
             self.candles,
@@ -2461,22 +3307,32 @@ class Engine:
             )
 
         max_keep = max(
-            CONFIG["HISTORY_LIMIT"],
-            CONFIG["PRELOAD_CANDLES"]
+            CONFIG[
+                "HISTORY_LIMIT"
+            ],
+            CONFIG[
+                "PRELOAD_CANDLES"
+            ]
         )
 
-        if len(self.candles) > max_keep:
+        if len(
+            self.candles
+        ) > max_keep:
 
-            self.candles = self.candles[
-                -max_keep:
-            ]
+            self.candles = (
+                self.candles[
+                    -max_keep:
+                ]
+            )
 
     async def handle_realtime(
         self,
         candle,
     ):
 
-        self.last_candle_time = time.time()
+        self.last_candle_time = (
+            time.time()
+        )
 
         price = float(
             candle["close"]
@@ -2489,9 +3345,13 @@ class Engine:
         if not CONFIG[
             "REALTIME_ENTRY"
         ]:
+
             return
 
-        if len(self.candles) < 2:
+        if len(
+            self.candles
+        ) < 2:
+
             return
 
         test_candles = list(
@@ -2500,12 +3360,15 @@ class Engine:
 
         if (
             test_candles
-            and test_candles[-1][
-                "timestamp"
-            ] == candle["timestamp"]
+            and test_candles[
+                -1
+            ]["timestamp"]
+            == candle["timestamp"]
         ):
 
-            test_candles[-1] = candle
+            test_candles[
+                -1
+            ] = candle
 
         else:
 
@@ -2513,12 +3376,16 @@ class Engine:
                 candle
             )
 
-        if len(test_candles) < 2:
+        if len(
+            test_candles
+        ) < 2:
+
             return
 
-        idx = len(
-            test_candles
-        ) - 1
+        idx = (
+            len(test_candles)
+            - 1
+        )
 
         signal = detect_engulfing(
             test_candles,
@@ -2526,6 +3393,7 @@ class Engine:
         )
 
         if not signal:
+
             return
 
         key = signal
@@ -2538,43 +3406,71 @@ class Engine:
 
         if pending is None:
 
-            self.pending[key] = {
+            self.pending[
+                key
+            ] = {
+
                 "started": now,
+
                 "ticks": 1,
-                "candle_time": candle[
-                    "timestamp"
-                ],
+
+                "candle_time": (
+                    candle[
+                        "timestamp"
+                    ]
+                ),
             }
 
             return
 
         if (
-            pending["candle_time"]
-            != candle["timestamp"]
+            pending[
+                "candle_time"
+            ]
+            != candle[
+                "timestamp"
+            ]
         ):
 
-            self.pending[key] = {
+            self.pending[
+                key
+            ] = {
+
                 "started": now,
+
                 "ticks": 1,
-                "candle_time": candle[
-                    "timestamp"
-                ],
+
+                "candle_time": (
+                    candle[
+                        "timestamp"
+                    ]
+                ),
             }
 
             return
 
-        pending["ticks"] += 1
+        pending[
+            "ticks"
+        ] += 1
 
         elapsed = (
             now
-            - pending["started"]
+            - pending[
+                "started"
+            ]
         )
 
         if (
-            pending["ticks"]
-            >= CONFIG["CONFIRM_TICKS"]
+            pending[
+                "ticks"
+            ]
+            >= CONFIG[
+                "CONFIRM_TICKS"
+            ]
             and elapsed
-            >= CONFIG["CONFIRM_SECONDS"]
+            >= CONFIG[
+                "CONFIRM_SECONDS"
+            ]
         ):
 
             candle_key = (
@@ -2585,8 +3481,10 @@ class Engine:
             if (
                 self.pending.get(
                     "executed"
-                ) == candle_key
+                )
+                == candle_key
             ):
+
                 return
 
             self.pending[
@@ -2595,7 +3493,9 @@ class Engine:
 
             old = self.candles
 
-            self.candles = test_candles
+            self.candles = (
+                test_candles
+            )
 
             try:
 
@@ -2617,6 +3517,24 @@ ENGINES = {}
 
 
 # ============================================================
+# HISTORY CACHE
+# ============================================================
+
+# ------------------------------------------------------------
+# IMPORTANT:
+# After the 6-month history is downloaded and the HistoricalDB
+# is built, the last PRELOAD_CANDLES candles are stored here.
+#
+# preload_current() uses this cache instead of making another
+# Twelve Data API request.
+#
+# This removes the duplicate startup API calls.
+# ------------------------------------------------------------
+
+HISTORY_CACHE = {}
+
+
+# ============================================================
 # PRELOAD CURRENT
 # ============================================================
 
@@ -2625,13 +3543,56 @@ async def preload_current(
     engine,
 ):
 
+    cache_key = (
+        normalize_symbol(
+            engine.symbol
+        ),
+        engine.interval
+    )
+
+    # --------------------------------------------------------
+    # 1. USE HISTORY CACHE FIRST
+    # --------------------------------------------------------
+
+    cached = HISTORY_CACHE.get(
+        cache_key
+    )
+
+    if cached:
+
+        engine.candles = [
+            dict(c)
+            for c in cached
+        ]
+
+        engine.last_candle_time = (
+            time.time()
+        )
+
+        log.info(
+            "Preload from history cache %s %s: %d candles",
+            engine.symbol,
+            engine.interval,
+            len(
+                engine.candles
+            )
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # 2. FALLBACK API REQUEST
+    # --------------------------------------------------------
+
     try:
 
         data = await client.time_series(
             symbol=engine.symbol,
             interval=engine.interval,
             outputsize=(
-                CONFIG["PRELOAD_CANDLES"]
+                CONFIG[
+                    "PRELOAD_CANDLES"
+                ]
                 + 2
             ),
         )
@@ -2647,21 +3608,25 @@ async def preload_current(
 
         if candles:
 
-            engine.candles = candles[
-                -CONFIG[
-                    "PRELOAD_CANDLES"
-                ]:
-            ]
+            engine.candles = (
+                candles[
+                    -CONFIG[
+                        "PRELOAD_CANDLES"
+                    ]:
+                ]
+            )
 
             engine.last_candle_time = (
                 time.time()
             )
 
             log.info(
-                "Preload %s %s: %d candles",
+                "Preload API %s %s: %d candles",
                 engine.symbol,
                 engine.interval,
-                len(engine.candles)
+                len(
+                    engine.candles
+                )
             )
 
     except Exception as e:
@@ -2726,7 +3691,9 @@ async def process_price_tick(
             tzinfo=timezone.utc
         )
 
-    price = float(price)
+    price = float(
+        price
+    )
 
     for (
         key,
@@ -2736,9 +3703,12 @@ async def process_price_tick(
     ):
 
         if engine.symbol != symbol:
+
             continue
 
-        interval = engine.interval
+        interval = (
+            engine.interval
+        )
 
         bucket = candle_bucket(
             timestamp,
@@ -2757,12 +3727,19 @@ async def process_price_tick(
         if current is None:
 
             current = {
+
                 "timestamp": bucket,
+
                 "open": price,
+
                 "high": price,
+
                 "low": price,
+
                 "close": price,
+
                 "volume": 0.0,
+
                 "closed": False,
             }
 
@@ -2777,21 +3754,29 @@ async def process_price_tick(
             continue
 
         if (
-            current["timestamp"]
+            current[
+                "timestamp"
+            ]
             == bucket
         ):
 
-            current["high"] = max(
+            current[
+                "high"
+            ] = max(
                 current["high"],
                 price
             )
 
-            current["low"] = min(
+            current[
+                "low"
+            ] = min(
                 current["low"],
                 price
             )
 
-            current["close"] = price
+            current[
+                "close"
+            ] = price
 
             await engine.handle_realtime(
                 current
@@ -2803,19 +3788,28 @@ async def process_price_tick(
             current
         )
 
-        previous["closed"] = True
+        previous[
+            "closed"
+        ] = True
 
         await engine.handle_closed(
             previous
         )
 
         new_candle = {
+
             "timestamp": bucket,
+
             "open": price,
+
             "high": price,
+
             "low": price,
+
             "close": price,
+
             "volume": 0.0,
+
             "closed": False,
         }
 
@@ -2877,6 +3871,7 @@ async def market_stream(
                         msg,
                         dict
                     ):
+
                         continue
 
                     if msg.get(
@@ -2885,28 +3880,48 @@ async def market_stream(
                         "subscribe-status",
                         "heartbeat",
                     ):
+
                         continue
 
                     symbol = (
-                        msg.get("symbol")
-                        or msg.get("code")
+                        msg.get(
+                            "symbol"
+                        )
+                        or
+                        msg.get(
+                            "code"
+                        )
                     )
 
                     price = (
-                        msg.get("price")
-                        or msg.get("close")
-                        or msg.get("value")
+                        msg.get(
+                            "price"
+                        )
+                        or
+                        msg.get(
+                            "close"
+                        )
+                        or
+                        msg.get(
+                            "value"
+                        )
                     )
 
                     if (
                         not symbol
                         or price is None
                     ):
+
                         continue
 
                     ts_value = (
-                        msg.get("timestamp")
-                        or msg.get("time")
+                        msg.get(
+                            "timestamp"
+                        )
+                        or
+                        msg.get(
+                            "time"
+                        )
                     )
 
                     ts = None
@@ -2917,20 +3932,29 @@ async def market_stream(
 
                             if isinstance(
                                 ts_value,
-                                (int, float)
+                                (
+                                    int,
+                                    float
+                                )
                             ):
 
-                                ts = datetime.fromtimestamp(
-                                    float(ts_value),
-                                    tz=timezone.utc
+                                ts = (
+                                    datetime.fromtimestamp(
+                                        float(
+                                            ts_value
+                                        ),
+                                        tz=timezone.utc
+                                    )
                                 )
 
                             else:
 
-                                ts = pd.to_datetime(
-                                    ts_value,
-                                    utc=True
-                                ).to_pydatetime()
+                                ts = (
+                                    pd.to_datetime(
+                                        ts_value,
+                                        utc=True
+                                    ).to_pydatetime()
+                                )
 
                         except Exception:
 
@@ -2982,17 +4006,26 @@ async def daily_report():
     ]
 
     total_balance = 0.0
+
     total_pnl = 0.0
+
     total_trades = 0
 
-    for engine in ENGINES.values():
+    for engine in (
+        ENGINES.values()
+    ):
 
         pnl = (
             engine.balance
-            - CONFIG["BALANCE"]
+            - CONFIG[
+                "BALANCE"
+            ]
         )
 
-        total_balance += engine.balance
+        total_balance += (
+            engine.balance
+        )
+
         total_pnl += pnl
 
         total_trades += len(
@@ -3002,17 +4035,30 @@ async def daily_report():
         lines.append(
             f"<b>{engine.symbol} "
             f"{engine.interval}</b> | "
-            f"Balance {engine.balance:.2f} | "
-            f"PnL {pnl:.2f} | "
-            f"W {engine.stats['wins']} | "
-            f"L {engine.stats['losses']}"
+            f"Balance "
+            f"{engine.balance:.2f} | "
+            f"PnL "
+            f"{pnl:.2f} | "
+            f"W "
+            f"{engine.stats['wins']} | "
+            f"L "
+            f"{engine.stats['losses']}"
         )
 
     lines.extend([
         "",
-        f"Total balance: {total_balance:.2f}",
-        f"Total PnL: {total_pnl:.2f}",
-        f"Trades: {total_trades}",
+        (
+            f"Total balance: "
+            f"{total_balance:.2f}"
+        ),
+        (
+            f"Total PnL: "
+            f"{total_pnl:.2f}"
+        ),
+        (
+            f"Trades: "
+            f"{total_trades}"
+        ),
     ])
 
     await TG_CLIENT.send(
@@ -3034,7 +4080,10 @@ async def health_check():
 
             dead = []
 
-            for key, engine in ENGINES.items():
+            for (
+                key,
+                engine
+            ) in ENGINES.items():
 
                 age = (
                     now
@@ -3044,7 +4093,8 @@ async def health_check():
                 if age > (
                     CONFIG[
                         "SOCKET_TIMEOUT_MIN"
-                    ] * 60
+                    ]
+                    * 60
                 ):
 
                     dead.append(
@@ -3058,7 +4108,8 @@ async def health_check():
             if dead:
 
                 text = (
-                    "⚠️ <b>MARKET DATA WARNING</b>\n"
+                    "⚠️ "
+                    "<b>MARKET DATA WARNING</b>\n"
                 )
 
                 for (
@@ -3068,7 +4119,8 @@ async def health_check():
                 ) in dead:
 
                     text += (
-                        f"{symbol} {interval}: "
+                        f"{symbol} "
+                        f"{interval}: "
                         f"{age/60:.1f} min\n"
                     )
 
@@ -3083,7 +4135,9 @@ async def health_check():
                 e
             )
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(
+            60
+        )
 
 
 # ============================================================
@@ -3108,25 +4162,33 @@ async def diagnostics_loop():
                     "DIAGNOSTICS_HOUR"
                 ]
                 and now.minute < 5
-                and last_day != now.date()
+                and last_day
+                != now.date()
             ):
 
                 last_day = now.date()
 
                 lines = [
-                    "🔎 <b>BOT DIAGNOSTICS</b>",
+                    "🔎 "
+                    "<b>BOT DIAGNOSTICS</b>",
                     "",
                 ]
 
-                for engine in ENGINES.values():
+                for engine in (
+                    ENGINES.values()
+                ):
 
                     lines.append(
                         f"{engine.symbol} "
                         f"{engine.interval}: "
-                        f"candles={len(engine.candles)}, "
-                        f"positions={len(engine.positions)}, "
-                        f"signals={engine.stats['signals']}, "
-                        f"blocked={engine.self_blocked}"
+                        f"candles="
+                        f"{len(engine.candles)}, "
+                        f"positions="
+                        f"{len(engine.positions)}, "
+                        f"signals="
+                        f"{engine.stats['signals']}, "
+                        f"blocked="
+                        f"{engine.self_blocked}"
                     )
 
                 await TG_CLIENT.send(
@@ -3140,7 +4202,9 @@ async def diagnostics_loop():
                 e
             )
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(
+            30
+        )
 
 
 # ============================================================
@@ -3161,9 +4225,12 @@ async def report_loop():
 
             if (
                 now.hour
-                == CONFIG["REPORT_HOUR"]
+                == CONFIG[
+                    "REPORT_HOUR"
+                ]
                 and now.minute < 5
-                and last_day != now.date()
+                and last_day
+                != now.date()
             ):
 
                 last_day = now.date()
@@ -3177,7 +4244,9 @@ async def report_loop():
                 e
             )
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(
+            30
+        )
 
 
 # ============================================================
@@ -3218,17 +4287,23 @@ async def main():
 
     log.info(
         "Symbols: %s",
-        CONFIG["SYMBOLS"]
+        CONFIG[
+            "SYMBOLS"
+        ]
     )
 
     log.info(
         "Intervals: %s",
-        CONFIG["INTERVALS"]
+        CONFIG[
+            "INTERVALS"
+        ]
     )
 
     log.info(
         "Commission: %.8f",
-        CONFIG["COMM_RATE"]
+        CONFIG[
+            "COMM_RATE"
+        ]
     )
 
     log.info(
@@ -3303,6 +4378,13 @@ async def main():
                     )
                 ] = engine
 
+                # ------------------------------------------------
+                # IMPORTANT:
+                # preload_current() now uses HISTORY_CACHE.
+                # Therefore it does NOT make another API call
+                # after the history has already been downloaded.
+                # ------------------------------------------------
+
                 await preload_current(
                     client,
                     engine
@@ -3313,12 +4395,17 @@ async def main():
         # ----------------------------------------------------
 
         await TG_CLIENT.send(
-            "🟢 <b>EngulfingTrend Bot v6.0.0 STARTED</b>\n\n"
+            "🟢 "
+            "<b>EngulfingTrend Bot v6.0.0 STARTED</b>\n\n"
             f"Market: Twelve Data\n"
-            f"Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
-            f"Timeframes: {', '.join(CONFIG['INTERVALS'])}\n"
-            f"Commission: {CONFIG['COMM_RATE']}\n"
-            f"Historical DB: {CONFIG['HISTORY_MONTHS']} months"
+            f"Symbols: "
+            f"{', '.join(CONFIG['SYMBOLS'])}\n"
+            f"Timeframes: "
+            f"{', '.join(CONFIG['INTERVALS'])}\n"
+            f"Commission: "
+            f"{CONFIG['COMM_RATE']}\n"
+            f"Historical DB: "
+            f"{CONFIG['HISTORY_MONTHS']} months"
         )
 
         # ----------------------------------------------------
@@ -3326,8 +4413,11 @@ async def main():
         # ----------------------------------------------------
 
         tasks = [
+
             asyncio.create_task(
-                market_stream(client)
+                market_stream(
+                    client
+                )
             ),
 
             asyncio.create_task(
