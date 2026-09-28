@@ -80,7 +80,7 @@ CONFIG = {
     "MAX_TRAIL_R": _f("MAX_TRAIL_R", 10),
     "COMM_RATE": _f("COMM_RATE", 0),
     "MIN_SIMILAR": _i("MIN_SIMILAR", 25),
-    "SIMILAR_GOOD_PCT": _f("SIMILAR_GOOD_PCT", 0.40),
+    "SIMILAR_GOOD_PCT": _f("SIMILAR_GOOD_PCT", 0.30),
     "BODY_TOL": _f("BODY_TOL", 0.35),
     "RANGE_TOL": _f("RANGE_TOL", 0.35),
     "WICK_TOL": _f("WICK_TOL", 0.35),
