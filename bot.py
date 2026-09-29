@@ -1,14 +1,16 @@
-# EngulfingTrend Bot v7.2.0
+# EngulfingTrend Bot v7.3.0
 # MARKET DATA: Twelve Data (REST API polling - Free tarif uchun)
 #
-# v7.1.0 -> v7.2.0:
-#   WebSocket (wss://ws.twelvedata.com) olib tashlandi.
-#   Endi Twelve Data REST API (time_series) orqali har POLL_INTERVAL_SEC
-#   da yangi shamlar olinadi. Bu bepul tarifda ham ishlaydi.
+# v7.2.0 -> v7.3.0:
+#   + INSIDE BAR BREAKOUT strategiyasi qo'shildi (3-sham proboy).
 #
-# v7.0.0 -> v7.1.0:
-#   1) ENGULFING QOIDASI KUCHAYTIRILDI (1→2 engulfing).
-#   2) FLAT + BREAKOUT ENGULFING qo'shildi.
+# v7.1.0 -> v7.2.0:
+#   WebSocket olib tashlandi, REST API polling ishlatiladi.
+#
+# Signal ustuvorligi:
+#   1) SWING       : 2 swing high/low + 1→2 engulfing
+#   2) BREAKOUT    : Flat zona + impuls engulfing
+#   3) INSIDE_BAR  : Ona bar + inside bar + yo'nalishli proboy
 
 import os
 import io
@@ -111,7 +113,7 @@ CONFIG = {
 
     "STREAM_STALE_SEC": _i("STREAM_STALE_SEC", 300),
 
-    # ---- REST API POLLING (WebSocket o'rniga) ----
+    # ---- REST API POLLING ----
     "POLL_INTERVAL_SEC": _i("POLL_INTERVAL_SEC", 60),
     "POLL_OUTPUTSIZE": _i("POLL_OUTPUTSIZE", 5),
 
@@ -370,7 +372,7 @@ def avg_range(candles):
 
 
 # ============================================================
-# ENGULFING — 1 ta sham OLDINGI 2 ta shamni yutadi
+# 1) ENGULFING — 1 ta sham OLDINGI 2 ta shamni yutadi
 # ============================================================
 
 def detect_engulfing(candles, idx):
@@ -423,6 +425,58 @@ def detect_engulfing(candles, idx):
         return None
 
     return signal
+
+
+# ============================================================
+# 2) INSIDE BAR BREAKOUT (Ichki bar + Yo'nalishli proboy)
+# ============================================================
+#
+# 1-sham (Ona bar): katta impulsli sham
+# 2-sham (Inside bar): to'liq 1-shamning HIGH-LOW ichida
+# 3-sham (Proboy): 1-shamning chegarasini yorib o'tadi
+#
+# SELL: 1,2,3 hammasi qizil + 3-sham LOW < 1-sham LOW
+# BUY : 1,2,3 hammasi yashil + 3-sham HIGH > 1-sham HIGH
+
+def detect_inside_bar_breakout(candles, idx):
+    if idx < 2:
+        return None
+
+    c1 = candles[idx - 2]
+    c2 = candles[idx - 1]
+    c3 = candles[idx]
+
+    o1, h1, l1, cl1 = (float(c1["open"]), float(c1["high"]),
+                       float(c1["low"]),  float(c1["close"]))
+    o2, h2, l2, cl2 = (float(c2["open"]), float(c2["high"]),
+                       float(c2["low"]),  float(c2["close"]))
+    o3, h3, l3, cl3 = (float(c3["open"]), float(c3["high"]),
+                       float(c3["low"]),  float(c3["close"]))
+
+    # 1) 2-sham 1-shamning ichida bo'lishi shart
+    is_inside = (h2 <= h1) and (l2 >= l1)
+    if not is_inside:
+        return None
+
+    c1_bear = cl1 < o1
+    c2_bear = cl2 < o2
+    c3_bear = cl3 < o3
+
+    c1_bull = cl1 > o1
+    c2_bull = cl2 > o2
+    c3_bull = cl3 > o3
+
+    # 2) SELL
+    if c1_bear and c2_bear and c3_bear and (l3 < l1):
+        if body_ratio(c3) >= CONFIG["MIN_BODY_RATIO"]:
+            return "SELL"
+
+    # 3) BUY
+    if c1_bull and c2_bull and c3_bull and (h3 > h1):
+        if body_ratio(c3) >= CONFIG["MIN_BODY_RATIO"]:
+            return "BUY"
+
+    return None
 
 
 # ============================================================
@@ -551,8 +605,14 @@ class SwingTracker:
         return None, None
 
     def check_signal(self, candles, idx):
+        """
+        Ustuvorlik:
+          1) SWING  (2 swing + engulfing)
+          2) BREAKOUT (flat + engulfing)
+          3) INSIDE_BAR (ona bar + inside + proboy)
+        """
+        # 1) SWING + engulfing
         eng = detect_engulfing(candles, idx)
-
         if eng is not None:
             if eng == "BUY":
                 ready, swing_idx = self.buy_structure_ready(idx)
@@ -565,9 +625,15 @@ class SwingTracker:
                     self.last_sell_swing_idx = swing_idx
                     return "SELL", "SWING"
 
+        # 2) Flat + breakout engulfing
         bo_sig, bo_info = self._check_breakout_engulfing(candles, idx)
         if bo_sig is not None:
             return bo_sig, ("BREAKOUT", bo_info)
+
+        # 3) Inside Bar Breakout
+        ib_sig = detect_inside_bar_breakout(candles, idx)
+        if ib_sig is not None:
+            return ib_sig, "INSIDE_BAR"
 
         return None, None
 
@@ -677,6 +743,31 @@ def fill_price(price, side, entering):
 
 def comm_cost(lot, price):
     return lot * price * CONFIG["COMM_RATE"]
+
+
+def build_swing_info(meta, candles, swings):
+    """meta asosida swing_info dict shakllantiradi."""
+    if meta == "SWING":
+        if candles:
+            pass
+        return None  # chaqiruvchi tomondan to'ldiriladi
+    if isinstance(meta, tuple) and meta[0] == "BREAKOUT":
+        bi = meta[1] or {}
+        return {
+            "type": bi.get("type", "BREAKOUT"),
+            "prev": bi.get("range_low", 0.0),
+            "last": bi.get("range_high", 0.0),
+        }
+    if meta == "INSIDE_BAR":
+        if len(candles) >= 3:
+            c1 = candles[-3]
+            return {
+                "type": "INSIDE_BAR",
+                "prev": float(c1["low"]),
+                "last": float(c1["high"]),
+            }
+        return {"type": "INSIDE_BAR", "prev": 0.0, "last": 0.0}
+    return {}
 
 
 class Engine:
@@ -855,7 +946,12 @@ class Engine:
 
         if si:
             st = si.get('type', '')
-            if st in ("BREAKOUT_HIGH", "BREAKOUT_LOW"):
+            if st == "INSIDE_BAR":
+                txt += (
+                    f"\n📐 Struktura: <b>INSIDE_BAR</b> "
+                    f"(ona bar {si.get('prev', 0):.4f}–{si.get('last', 0):.4f})"
+                )
+            elif st in ("BREAKOUT_HIGH", "BREAKOUT_LOW"):
                 txt += (
                     f"\n📐 Struktura: <b>{st}</b> "
                     f"(flat {si.get('prev', 0):.4f}–{si.get('last', 0):.4f})"
@@ -1080,7 +1176,13 @@ class Engine:
         si_txt = ""
         if swing_info:
             st = swing_info.get("type", "")
-            if st in ("BREAKOUT_HIGH", "BREAKOUT_LOW"):
+            if st == "INSIDE_BAR":
+                si_txt = (
+                    f"📐 Struktura: <b>INSIDE_BAR</b>\n"
+                    f"Ona bar: {swing_info.get('prev', 0):.4f} – "
+                    f"{swing_info.get('last', 0):.4f}\n"
+                )
+            elif st in ("BREAKOUT_HIGH", "BREAKOUT_LOW"):
                 si_txt = (
                     f"📐 Struktura: <b>{st}</b>\n"
                     f"Flat zona: {swing_info.get('prev', 0):.4f} → "
@@ -1162,13 +1264,8 @@ class Engine:
                         "prev": l_prev[1],
                         "last": l_last[1],
                     }
-            elif isinstance(meta, tuple) and meta[0] == "BREAKOUT":
-                bi = meta[1] or {}
-                swing_info = {
-                    "type": bi.get("type", "BREAKOUT"),
-                    "prev": bi.get("range_low", 0.0),
-                    "last": bi.get("range_high", 0.0),
-                }
+            else:
+                swing_info = build_swing_info(meta, self.candles, self.swings)
 
             await self.open_signal(signal, candle, swing_info)
 
@@ -1212,20 +1309,23 @@ class Engine:
         idx = len(test_candles) - 1
 
         eng = detect_engulfing(test_candles, idx)
-        if not eng:
-            return
 
+        classic_ok = False
         if eng == "BUY":
             classic_ok, _ = self.swings.buy_structure_ready(idx)
-        else:
+        elif eng == "SELL":
             classic_ok, _ = self.swings.sell_structure_ready(idx)
 
         bo_sig, _ = self.swings._check_breakout_engulfing(test_candles, idx)
+        ib_sig = detect_inside_bar_breakout(test_candles, idx)
 
-        if not classic_ok and bo_sig is None:
+        if not classic_ok and bo_sig is None and ib_sig is None:
             return
 
-        key = eng
+        key = eng or bo_sig or ib_sig
+        if key is None:
+            return
+
         now = time.time()
         pending = self.pending.get(key)
 
@@ -1244,7 +1344,7 @@ class Engine:
             pending["ticks"] >= CONFIG["CONFIRM_TICKS"]
             and elapsed >= CONFIG["CONFIRM_SECONDS"]
         ):
-            candle_key = f"{candle['timestamp']}-{eng}"
+            candle_key = f"{candle['timestamp']}-{key}"
             if self.pending.get("executed") == candle_key:
                 return
             self.pending["executed"] = candle_key
@@ -1278,13 +1378,8 @@ class Engine:
                                 "prev": l_prev[1],
                                 "last": l_last[1],
                             }
-                    elif isinstance(meta, tuple) and meta[0] == "BREAKOUT":
-                        bi = meta[1] or {}
-                        swing_info = {
-                            "type": bi.get("type", "BREAKOUT"),
-                            "prev": bi.get("range_low", 0.0),
-                            "last": bi.get("range_high", 0.0),
-                        }
+                    else:
+                        swing_info = build_swing_info(meta, test_candles, self.swings)
                     await self.open_signal(signal, candle, swing_info)
             finally:
                 self.candles = old
@@ -1341,11 +1436,8 @@ async def preload_current(client, engine):
 
 
 # ============================================================
-# LIVE CANDLE BUILDER (REST polling uchun)
+# LIVE CANDLE BUCKET
 # ============================================================
-
-LIVE_CANDLES = {}
-
 
 def candle_bucket(timestamp, interval):
     sec = interval_seconds(interval)
@@ -1355,18 +1447,13 @@ def candle_bucket(timestamp, interval):
 
 
 # ============================================================
-# REST API POLLER (WebSocket o'rniga)
+# REST API POLLER
 # ============================================================
 
 _LAST_TICK_TS = {"t": time.time()}
 
 
 async def poll_engine(client, engine):
-    """
-    Bitta engine uchun Twelve Data REST API'dan oxirgi shamchalarni oladi.
-    - Yangi yopilgan shamlar -> engine.handle_closed()
-    - Hozir shakllanayotgan sham -> engine.handle_realtime()
-    """
     try:
         data = await client.time_series(
             symbol=engine.symbol,
@@ -1411,7 +1498,6 @@ async def poll_engine(client, engine):
 
     last_engine_ts = engine.candles[-1]["timestamp"] if engine.candles else None
 
-    # 1) Yangi yopilgan shamlar
     for c in fetched:
         if not c["closed"]:
             continue
@@ -1419,18 +1505,12 @@ async def poll_engine(client, engine):
             await engine.handle_closed(c)
             last_engine_ts = c["timestamp"]
 
-    # 2) Hozir shakllanayotgan sham (realtime confirmation uchun)
     forming = fetched[-1]
     if not forming["closed"]:
         await engine.handle_realtime(forming)
 
 
 async def market_poller(client):
-    """
-    WebSocket o'rniga REST API orqali har POLL_INTERVAL_SEC da
-    barcha engine'larni navbat bilan so'raydi.
-    Rate limiter (TD_REQ_PER_MIN) avtomatik cheklaydi.
-    """
     log.info(
         "Market data rejimi: REST API polling (har ~%d sek, rate=%d rpm)",
         CONFIG["POLL_INTERVAL_SEC"], CONFIG["TD_REQ_PER_MIN"],
@@ -1594,7 +1674,7 @@ async def main():
         log.warning("TELEGRAM_CHAT_ID is missing")
 
     log.info("=" * 50)
-    log.info("EngulfingTrend Bot v7.2.0 (REST API polling)")
+    log.info("EngulfingTrend Bot v7.3.0 (REST API polling + 3 strategiya)")
     log.info("Symbols: %s", CONFIG["SYMBOLS"])
     log.info("Intervals: %s", CONFIG["INTERVALS"])
     log.info("Poll interval: %ds | Rate: %d rpm",
@@ -1617,15 +1697,16 @@ async def main():
                 await preload_current(client, engine)
 
         await TG_CLIENT.send(
-            "🟢 <b>EngulfingTrend Bot v7.2.0 STARTED</b>\n\n"
+            "🟢 <b>EngulfingTrend Bot v7.3.0 STARTED</b>\n\n"
             "Market: Twelve Data (<b>REST API polling</b>)\n"
             f"Poll interval: {CONFIG['POLL_INTERVAL_SEC']}s\n"
             f"Rate limit: {CONFIG['TD_REQ_PER_MIN']} req/min\n"
             f"Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
-            f"Timeframes: {', '.join(CONFIG['INTERVALS'])}\n"
-            f"Engulfing: <b>1 sham OLDINGI 2 tasini yutadi</b>\n"
-            f"Signal 1: 2 swing high → BUY, 2 swing low → SELL\n"
-            f"Signal 2: Flat + breakout impuls engulfing\n"
+            f"Timeframes: {', '.join(CONFIG['INTERVALS'])}\n\n"
+            f"🎯 <b>Strategiyalar (ustuvorlik):</b>\n"
+            f"1) SWING: 2 swing high/low + 1→2 engulfing\n"
+            f"2) BREAKOUT: Flat zona + impuls engulfing\n"
+            f"3) INSIDE_BAR: Ona bar + inside bar + proboy\n\n"
             f"Commission: {CONFIG['COMM_RATE']} | Spread: {CONFIG['SPREAD_PCT']}\n"
             f"Max signals/symbol: {CONFIG['MAX_SIGNALS_PER_SYMBOL']}"
         )
