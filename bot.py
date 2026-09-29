@@ -1,27 +1,46 @@
-# EngulfingTrend Bot v6.2.0
+# EngulfingTrend Bot v7.0.0
 # MARKET DATA: Twelve Data
 #
-# v6.1.0 -> v6.2.0 (FAQAT quyidagilar o'zgardi, savdo logikasi
-# (SL/TP/risk/history filter/engulfing) TEGILMAGAN):
+# v6.3.0 -> v7.0.0: SAVDO LOGIKASI SODDALASHTIRILDI
 #
-#  FIX A) WebSocket "subscribe-status" va xato xabarlari endi
-#         jimgina tashlanmaydi -> log qilinadi va agar obuna
-#         muvaffaqiyatsiz bo'lsa Telegram'ga ogohlantirish ketadi.
-#         (Bu "jim qolish" muammosining eng ehtimolli sababi edi:
-#          socket ochiq, lekin obuna rad etilgan bo'lishi mumkin.)
+#   TARIX FILTRI BUTUNLAY OLIB TASHLANDI (HistoricalDB, 6 oylik
+#   yuklash, similarity/distance - hammasi yo'q). Endi signal FAQAT
+#   quyidagi ikki shartga qarab ochiladi:
 #
-#  FIX B) health_check() endi faqat ogohlantirmaydi -> uzoq jim
-#         qolgan stream'ni MAJBURIY qayta ulaydi (reconnect_event),
-#         va bitta hodisa uchun faqat BITTA marta ogohlantiradi
-#         (avvalgidek har daqiqada takrorlanmaydi), tiklanganda
-#         "tiklandi" deb alohida xabar beradi.
+#   BUY:
+#     1) Bozor ketma-ket 2 ta SWING HIGH (chuqqi) hosil qiladi va
+#        2-chisi 1-chisidan BALANDROQ (breakout yuqoriga).
+#     2) Shundan keyin (darhol yoki pastga tortilib qaytgandan
+#        keyin) BULLISH ENGULFING (kuchli sham oldingi 2 tasini
+#        yuqoriga yutadi) paydo bo'lsa -> BUY.
 #
-#  FIX C) close_signal() endi HAR yopilishda (TP_A qisman yopilish,
-#         BE, Trailing, SL) to'liq Telegram xabar + yangi grafik
-#         yuboradi: sabab, R, Gross/Comm/Net, balance, va o'sha
-#         signal ochilgandagi tarixiy (history) kontekst.
+#   SELL:
+#     1) Bozor ketma-ket 2 ta SWING LOW (pastlik) hosil qiladi va
+#        2-chisi 1-chisidan PASTROQ (breakdown pastga).
+#     2) Shundan keyin BEARISH ENGULFING paydo bo'lsa -> SELL.
 #
-# Boshqa hech narsa o'zgartirilmadi.
+#   Qat'iy qoida (tasdiqlangan): 2 chuqqi FAQAT BUY uchun, 2 pastlik
+#   FAQAT SELL uchun. Mos kelmagan kombinatsiya (2 chuqqi + bearish
+#   engulfing yoki 2 pastlik + bullish engulfing) signal bermaydi.
+#
+#   Har bir swing juftligi faqat BIR MARTA signal beradi (qayta
+#   ishlatilmaydi), yangi swing juftligi paydo bo'lgunча qayta
+#   otilmaydi.
+#
+# BOSHQA HAMMA NARSA v6.x dan meros (o'zgarmagan yoki avvalgi
+# auditda tuzatilgan holicha saqlanadi):
+#   - Risk boshqaruvi: A (qisman TP 2R) + B (BE + trailing + 10R cap)
+#   - Yo'nalish ziddiyati bloklanadi (bitta symbol+TF'da qarama-qarshi
+#     pozitsiya ochiq bo'lsa, yangi qarshi signal rad etiladi)
+#   - Signal stacking MAX_SIGNALS_PER_SYMBOL bilan cheklangan
+#   - Ketma-ket zarar SIGNAL (A+B jami) bo'yicha hisoblanadi
+#   - USD/JPY va shu kabi juftliklar uchun PnL USD'ga konvertatsiya
+#   - SL buferi signal shamining range'iga nisbatan foiz
+#   - Komissiya + spread simulyatsiyasi
+#   - Kunlik zarar limiti "yopishqoq" (kun oxirigacha)
+#   - Heartbeat "jonli tick" hisoblanmaydi, faqat haqiqiy narx tick'i
+#   - Har OCHILISH va YOPILISH uchun to'liq Telegram xabar + grafik
+#   - Socket uzoq jim qolsa majburiy reconnect
 
 import os
 import io
@@ -31,7 +50,7 @@ import time
 import json
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import aiohttp
 import websockets
@@ -56,9 +75,6 @@ TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# Railway: attach a Volume, mount it at /data and set DATA_DIR=/data
-DATA_DIR = os.getenv("DATA_DIR", "./data").strip()
-
 
 def _f(name, default):
     return float(os.getenv(name, str(default)))
@@ -79,55 +95,68 @@ def _list(name, default):
 CONFIG = {
     "SYMBOLS": _list("SYMBOLS", "SPY,WTI/USD,XAU/USD,USD/JPY,EUR/USD"),
     "INTERVALS": _list("INTERVALS", "1m,5m,15m,1h"),
-    "INTERVAL": os.getenv("INTERVAL", "1m"),
+
     "BALANCE": _f("BALANCE", 1000),
     "RISK_PCT": _f("RISK_PCT", 0.02),
     "PART_RISK_RATIO": _f("PART_RISK_RATIO", 0.50),
     "LOT_MIN": _f("LOT_MIN", 0.001),
     "LOT_MAX": _f("LOT_MAX", 5.0),
-    "MIN_RISK_USD": _f("MIN_RISK_USD", 1.0),
     "MAX_OPEN_POS": _i("MAX_OPEN_POS", 10),
+
+    # bitta symbol+interval'da bir vaqtning o'zida ochiq bo'lishi
+    # mumkin bo'lgan signallar soni (yo'nalish ziddiyati va cheksiz
+    # stacking'ni to'xtatadi)
+    "MAX_SIGNALS_PER_SYMBOL": _i("MAX_SIGNALS_PER_SYMBOL", 1),
+
     "PRELOAD_CANDLES": _i("PRELOAD_CANDLES", 300),
-    "HISTORY_MONTHS": _i("HISTORY_MONTHS", 6),
-    "HISTORY_LOOKBACK_CANDLES": _i("HISTORY_LOOKBACK_CANDLES", 10),
-    "SL_BUF": _f("SL_BUF", 10),
+
+    # ---- SWING STRUCTURE ----
+    # Swing high/low tasdiqlash uchun har tomonda kerak bo'lgan
+    # shamlar soni (fraktal turi belgisi). 2 = standart.
+    "SWING_LOOKBACK": _i("SWING_LOOKBACK", 2),
+    # Swing juftligi shu qadar shamdan ko'p oldin bo'lsa, "eskirgan"
+    # hisoblanadi va endi engulfing bilan birga signal bermaydi
+    # (0 = cheksiz, hech qachon eskirmaydi).
+    "SWING_MAX_AGE_CANDLES": _i("SWING_MAX_AGE_CANDLES", 30),
+
+    # SL buferi: signal shamining range'iga nisbatan foiz
+    "SL_BUF_FRAC": _f("SL_BUF_FRAC", 0.05),
+
+    # spread/slippage simulyatsiyasi (narxning foizi)
+    "SPREAD_PCT": _f("SPREAD_PCT", 0.0002),
+
     "REALTIME_ENTRY": os.getenv("REALTIME_ENTRY", "true").lower() == "true",
     "CONFIRM_SECONDS": _f("CONFIRM_SECONDS", 2.5),
     "CONFIRM_TICKS": _i("CONFIRM_TICKS", 2),
+
     "A_TP_R": _f("A_TP_R", 2),
     "BE_AT_R": _f("BE_AT_R", 2),
     "TRAIL_STEP_R": _f("TRAIL_STEP_R", 2),
     "MAX_TRAIL_R": _f("MAX_TRAIL_R", 10),
-    "COMM_RATE": _f("COMM_RATE", 0),
-    "MIN_SIMILAR": _i("MIN_SIMILAR", 25),
-    "SIMILAR_GOOD_PCT": _f("SIMILAR_GOOD_PCT", 0.30),
-    "BODY_TOL": _f("BODY_TOL", 0.35),
-    "RANGE_TOL": _f("RANGE_TOL", 0.35),
-    "WICK_TOL": _f("WICK_TOL", 0.35),
-    "STRUCT_TOL": _f("STRUCT_TOL", 0.50),
-    "DIST_TOL": _f("DIST_TOL", 0.50),
-    "TIME_BUCKET_MINUTES": _i("TIME_BUCKET_MINUTES", 60),
-    "TIME_MIN_SAMPLES": _i("TIME_MIN_SAMPLES", 20),
-    "TIME_MIN_GOOD_PCT": _f("TIME_MIN_GOOD_PCT", 0.20),
+
+    "COMM_RATE": _f("COMM_RATE", 0.0005),
+
     "MAX_CONSECUTIVE_LOSSES": _i("MAX_CONSECUTIVE_LOSSES", 10),
+
     "REPORT_HOUR": _i("REPORT_HOUR", 18),
     "DIAGNOSTICS_HOUR": _i("DIAGNOSTICS_HOUR", 9),
     "SOCKET_TIMEOUT_MIN": _i("SOCKET_TIMEOUT_MIN", 30),
     "MAX_DAILY_LOSS_PCT": _f("MAX_DAILY_LOSS_PCT", 0.15),
     "CHART_CANDLES": _i("CHART_CANDLES", 100),
     "HISTORY_LIMIT": _i("HISTORY_LIMIT", 1000),
-    "MAX_HISTORY_CANDIDATES": _i("MAX_HISTORY_CANDIDATES", 5000),
-    # Twelve Data free plan = 8 credits/min. 6 leaves a safety margin.
+
     "TD_REQ_PER_MIN": _i("TD_REQ_PER_MIN", 6),
 
-    # ---- FIX B: reconnect / alert tuning ----
-    # Stream shu qadar sekund jim tursa -> majburiy reconnect.
     "STREAM_STALE_SEC": _i("STREAM_STALE_SEC", 90),
+
+    # minimal ahamiyat filtri - juda mayda shamlar signal bermasin
+    "MIN_RANGE_VS_AVG": _f("MIN_RANGE_VS_AVG", 0.5),
+    "MIN_BODY_RATIO": _f("MIN_BODY_RATIO", 0.3),
 }
 
 
 # ============================================================
-# LOGGING  (stdout -> Railway shows INFO as info, not error)
+# LOGGING
 # ============================================================
 
 logging.basicConfig(
@@ -144,12 +173,8 @@ log = logging.getLogger("EngulfingTrend")
 
 
 # ============================================================
-# TWELVE DATA
+# HELPERS
 # ============================================================
-
-TD_BASE = "https://api.twelvedata.com"
-TD_WS = "wss://ws.twelvedata.com/v1/quotes/price"
-
 
 def td_interval(interval):
     mapping = {
@@ -181,9 +206,46 @@ def normalize_symbol(symbol):
     return aliases.get(symbol, symbol)
 
 
-def td_date(dt):
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+_FX_WARNED = set()
 
+
+def to_account_ccy(symbol, amount, ref_price):
+    """
+    Hisob valyutasi USD deb faraz qilinadi.
+      - "/" yo'q (SPY kabi) -> allaqachon USD.
+      - QUOTE == USD (EUR/USD, XAU/USD) -> allaqachon USD.
+      - BASE == USD (USD/JPY, USD/CAD) -> quote valyutadan USD'ga
+        joriy narxga bo'lib o'tkaziladi.
+      - Boshqa USD ishtirok etmagan juftlik -> aniq kurs yo'q, bir
+        marta ogohlantirib, o'zgarishsiz qaytariladi.
+    """
+
+    if "/" not in symbol:
+        return amount
+
+    base, quote = symbol.split("/", 1)
+
+    if quote == "USD":
+        return amount
+
+    if base == "USD":
+        if ref_price <= 0:
+            return amount
+        return amount / ref_price
+
+    if symbol not in _FX_WARNED:
+        _FX_WARNED.add(symbol)
+        log.warning(
+            "%s: USD ishtirok etmagan juft, PnL konvertatsiyasi "
+            "yo'q (taxminiy)", symbol
+        )
+
+    return amount
+
+
+# ============================================================
+# TWELVE DATA CLIENT
+# ============================================================
 
 class DailyLimitError(Exception):
     pass
@@ -197,7 +259,6 @@ class TwelveData:
         self.request_times = []
         self.lock = asyncio.Lock()
         self.max_rpm = max(1, CONFIG["TD_REQ_PER_MIN"])
-        self.daily_exhausted = False
 
     async def start(self):
         if self.session is None:
@@ -211,7 +272,6 @@ class TwelveData:
             self.session = None
 
     async def _throttle(self):
-        """Sliding-window limiter. Called before EVERY http attempt."""
         async with self.lock:
             while True:
                 now = time.monotonic()
@@ -222,32 +282,15 @@ class TwelveData:
                     self.request_times.append(now)
                     return
                 wait = 61 - (now - self.request_times[0]) + 0.5
-                log.info(
-                    "Rate limiter: waiting %.1f sec...", max(wait, 1)
-                )
+                log.info("Rate limiter: waiting %.1f sec...", max(wait, 1))
                 await asyncio.sleep(max(wait, 1))
-
-    async def _backoff(self, attempt, retry_after, why):
-        try:
-            base = float(retry_after) if retry_after else 0
-        except Exception:
-            base = 0
-        wait = max(base, 65) + attempt * 20
-        log.warning(
-            "Twelve Data %s. Waiting %.0f sec (attempt %d/6)",
-            why, wait, attempt + 1
-        )
-        await asyncio.sleep(wait)
-        # a full minute has passed -> fresh window
-        async with self.lock:
-            self.request_times = []
 
     async def request(self, endpoint, params):
         await self.start()
 
         params = dict(params)
         params["apikey"] = self.api_key
-        url = f"{TD_BASE}/{endpoint}"
+        url = f"https://api.twelvedata.com/{endpoint}"
 
         for attempt in range(6):
 
@@ -271,45 +314,42 @@ class TwelveData:
                 continue
 
             if status == 429:
-                await self._backoff(attempt, retry_after, "HTTP 429")
+                try:
+                    base = float(retry_after) if retry_after else 0
+                except Exception:
+                    base = 0
+                wait = max(base, 65) + attempt * 20
+                log.warning("HTTP 429. Waiting %.0f sec", wait)
+                await asyncio.sleep(wait)
+                async with self.lock:
+                    self.request_times = []
                 continue
 
             if status != 200:
-                raise RuntimeError(
-                    f"Twelve Data HTTP {status}: {text[:500]}"
-                )
+                raise RuntimeError(f"Twelve Data HTTP {status}: {text[:500]}")
 
             try:
                 data = json.loads(text)
             except Exception:
-                raise RuntimeError(
-                    f"Invalid Twelve Data response: {text[:500]}"
-                )
+                raise RuntimeError(f"Invalid response: {text[:500]}")
 
             if isinstance(data, dict) and data.get("status") == "error":
 
                 message = str(data.get("message", "Twelve Data API error"))
                 low = message.lower()
-                code = data.get("code")
 
                 if "no data" in low:
                     return {"values": []}
 
-                if (
-                    "current day" in low
-                    or "per day" in low
-                    or "daily" in low
-                    or "for the day" in low
-                ):
+                if "daily" in low or "per day" in low or "for the day" in low:
                     raise DailyLimitError(message)
 
-                if (
-                    code == 429
-                    or "limit" in low
-                    or "credits" in low
-                    or "too many" in low
-                ):
-                    await self._backoff(attempt, None, f"limit: {message[:120]}")
+                if "limit" in low or "credits" in low or "too many" in low:
+                    wait = 65 + attempt * 20
+                    log.warning("Twelve Data limit: %s. Wait %ds", message[:120], wait)
+                    await asyncio.sleep(wait)
+                    async with self.lock:
+                        self.request_times = []
                     continue
 
                 raise RuntimeError(message)
@@ -318,10 +358,7 @@ class TwelveData:
 
         raise RuntimeError("Twelve Data request failed after 6 attempts")
 
-    async def time_series(
-        self, symbol, interval, outputsize=5000,
-        start_date=None, end_date=None,
-    ):
+    async def time_series(self, symbol, interval, outputsize=300):
         params = {
             "symbol": normalize_symbol(symbol),
             "interval": td_interval(interval),
@@ -329,23 +366,14 @@ class TwelveData:
             "format": "JSON",
             "timezone": "UTC",
         }
-        if start_date:
-            params["start_date"] = start_date
-        if end_date:
-            params["end_date"] = end_date
         return await self.request("time_series", params)
 
     async def price_stream(self, symbols):
-        """
-        FIX A: endi faqat yield qilmaydi -> ulanish/obuna holatini ham
-        log qiladi, shunda market_stream() qaysi obuna muvaffaqiyatsiz
-        bo'lganini bila oladi.
-        """
 
         if not symbols:
             return
 
-        url = f"{TD_WS}?apikey={self.api_key}"
+        url = f"wss://ws.twelvedata.com/v1/quotes/price?apikey={self.api_key}"
 
         async with websockets.connect(
             url,
@@ -430,86 +458,14 @@ def body_ratio(c):
     return body_size(c) / candle_range(c)
 
 
-def upper_wick_ratio(c):
-    h = float(c["high"])
-    o = float(c["open"])
-    cl = float(c["close"])
-    return max(0.0, h - max(o, cl)) / candle_range(c)
-
-
-def lower_wick_ratio(c):
-    l = float(c["low"])
-    o = float(c["open"])
-    cl = float(c["close"])
-    return max(0.0, min(o, cl) - l) / candle_range(c)
-
-
-def close_position(c):
-    return (float(c["close"]) - float(c["low"])) / candle_range(c)
-
-
-def signed_body(c):
-    r = candle_range(c)
-    if r <= 0:
-        return 0.0
-    return (float(c["close"]) - float(c["open"])) / r
+def avg_range(candles):
+    if not candles:
+        return 1e-12
+    return sum(candle_range(x) for x in candles) / max(len(candles), 1)
 
 
 # ============================================================
-# STRUCTURE
-# ============================================================
-
-def structure_features(candles):
-
-    if len(candles) < 3:
-        return {
-            "trend": 0.0, "hh": 0.0, "hl": 0.0,
-            "lh": 0.0, "ll": 0.0, "range_pos": 0.5,
-        }
-
-    recent = candles[-10:]
-
-    highs = [float(x["high"]) for x in recent]
-    lows = [float(x["low"]) for x in recent]
-
-    trend = float(recent[-1]["close"]) - float(recent[0]["open"])
-
-    avg_range = sum(candle_range(x) for x in recent) / max(len(recent), 1)
-
-    trend_norm = trend / max(avg_range * len(recent), 1e-12)
-
-    hh = hl = lh = ll = 0
-
-    for i in range(1, len(recent)):
-        if highs[i] > highs[i - 1]:
-            hh += 1
-        if lows[i] > lows[i - 1]:
-            hl += 1
-        if highs[i] < highs[i - 1]:
-            lh += 1
-        if lows[i] < lows[i - 1]:
-            ll += 1
-
-    last = recent[-1]
-
-    range_pos = (float(last["close"]) - min(lows)) / max(
-        max(highs) - min(lows), 1e-12
-    )
-
-    n = max(len(recent) - 1, 1)
-
-    return {
-        "trend": trend_norm,
-        "hh": hh / n,
-        "hl": hl / n,
-        "lh": lh / n,
-        "ll": ll / n,
-        "range_pos": range_pos,
-    }
-
-
-# ============================================================
-# ENGULFING
+# ENGULFING (minimal ahamiyat filtri bilan)
 # ============================================================
 
 def detect_engulfing(candles, idx):
@@ -525,616 +481,170 @@ def detect_engulfing(candles, idx):
     co = float(cur["open"])
     cc = float(cur["close"])
 
+    signal = None
+
     if pc < po and cc > co and co <= pc and cc >= po:
-        return "BUY"
+        signal = "BUY"
+    elif pc > po and cc < co and co >= pc and cc <= po:
+        signal = "SELL"
 
-    if pc > po and cc < co and co >= pc and cc <= po:
-        return "SELL"
-
-    return None
-
-
-# ============================================================
-# FEATURES
-# ============================================================
-
-def make_features(candles, idx, signal):
-
-    start = max(0, idx - CONFIG["HISTORY_LOOKBACK_CANDLES"] + 1)
-
-    sample = candles[start:idx + 1]
-
-    if not sample:
+    if signal is None:
         return None
 
-    current = candles[idx]
+    lookback = 10
+    start = max(0, idx - lookback)
+    context = candles[start:idx]
 
-    ranges = [candle_range(x) for x in sample]
-    avg_range = sum(ranges) / max(len(ranges), 1)
+    if context:
+        ar = avg_range(context)
+        if ar > 0 and candle_range(cur) < CONFIG["MIN_RANGE_VS_AVG"] * ar:
+            return None
 
-    sf = structure_features(sample)
-
-    return {
-        "signal": signal,
-        "body": body_ratio(current),
-        "range": candle_range(current) / max(avg_range, 1e-12),
-        "upper_wick": upper_wick_ratio(current),
-        "lower_wick": lower_wick_ratio(current),
-        "close_position": close_position(current),
-        "signed_body": signed_body(current),
-        "trend": sf["trend"],
-        "hh": sf["hh"],
-        "hl": sf["hl"],
-        "lh": sf["lh"],
-        "ll": sf["ll"],
-        "range_pos": sf["range_pos"],
-        "entry": float(current["close"]),
-        "high": float(current["high"]),
-        "low": float(current["low"]),
-    }
-
-
-# ============================================================
-# DISTANCE
-# ============================================================
-
-def normalized_distance(a, b):
-    if a is None or b is None:
-        return 999.0
-    return abs(float(a) - float(b))
-
-
-def feature_distance(a, b):
-
-    if not a or not b:
-        return 999.0
-
-    dist = 0.0
-
-    dist += min(normalized_distance(a["body"], b["body"])
-                / max(CONFIG["BODY_TOL"], 1e-12), 5)
-
-    dist += min(normalized_distance(a["range"], b["range"])
-                / max(CONFIG["RANGE_TOL"], 1e-12), 5)
-
-    dist += min(normalized_distance(a["upper_wick"], b["upper_wick"])
-                / max(CONFIG["WICK_TOL"], 1e-12), 5)
-
-    dist += min(normalized_distance(a["lower_wick"], b["lower_wick"])
-                / max(CONFIG["WICK_TOL"], 1e-12), 5)
-
-    for key in ["trend", "hh", "hl", "lh", "ll", "range_pos"]:
-        dist += min(
-            normalized_distance(a.get(key, 0), b.get(key, 0))
-            / max(CONFIG["STRUCT_TOL"], 1e-12),
-            5
-        )
-
-    return dist
-
-
-# ============================================================
-# HISTORICAL TRADE EVALUATION
-# ============================================================
-
-def evaluate_historical_trade(candles, idx, signal):
-
-    if idx >= len(candles) - 1:
+    if body_ratio(cur) < CONFIG["MIN_BODY_RATIO"]:
         return None
 
-    setup = candles[idx]
-    entry = float(setup["close"])
-
-    if signal == "BUY":
-
-        sl = float(setup["low"])
-        risk = entry - sl
-
-        if risk <= 0:
-            return None
-
-        tp = entry + risk * CONFIG["A_TP_R"]
-
-        for j in range(idx + 1, len(candles)):
-            c = candles[j]
-            h = float(c["high"])
-            l = float(c["low"])
-
-            if l <= sl:
-                return -1.0
-            if h >= tp:
-                return CONFIG["A_TP_R"]
-
-    else:
-
-        sl = float(setup["high"])
-        risk = sl - entry
-
-        if risk <= 0:
-            return None
-
-        tp = entry - risk * CONFIG["A_TP_R"]
-
-        for j in range(idx + 1, len(candles)):
-            c = candles[j]
-            h = float(c["high"])
-            l = float(c["low"])
-
-            if h >= sl:
-                return -1.0
-            if l <= tp:
-                return CONFIG["A_TP_R"]
-
-    return 0.0
+    return signal
 
 
 # ============================================================
-# HISTORICAL DATABASE
+# SWING STRUCTURE (2 chuqqi -> BUY zamin, 2 pastlik -> SELL zamin)
 # ============================================================
 
-class HistoricalDB:
+class SwingTracker:
+    """
+    Har symbol+interval uchun alohida. Yopilgan shamlar ustida
+    ishlaydi (fraktal: bir sham SWING_LOOKBACK ta qo'shni shamdan
+    baland/past bo'lsa, tasdiqlangan swing hisoblanadi - buning
+    uchun undan keyin ham SWING_LOOKBACK ta sham kerak, ya'ni
+    tasdiqlash SWING_LOOKBACK shamlik kechikish bilan keladi).
+
+    QAT'IY QOIDA: 2 ta swing HIGH (2-chisi balandroq) FAQAT BUY
+    uchun zamin beradi; 2 ta swing LOW (2-chisi pastroq) FAQAT SELL
+    uchun zamin beradi. Mos kelmagan kombinatsiya (masalan HIGH
+    zamin + bearish engulfing) signal bermaydi.
+    """
 
     def __init__(self):
-        self.rows = {}
+        self.swing_highs = []   # [(idx, price), ...] eng eski -> eng yangi
+        self.swing_lows = []
+        self._checked_idx = -1
+        self.last_buy_swing_idx = None
+        self.last_sell_swing_idx = None
 
-    def key(self, symbol, interval):
-        return (normalize_symbol(symbol), interval)
-
-    def build_time_stats(self, symbol, interval):
-
-        rows = self.rows.get(self.key(symbol, interval), [])
-
-        buckets = {}
-
-        for row in rows:
-            bucket = row.get("time_bucket")
-            if bucket is None:
+    def _is_swing_high(self, candles, i, lb):
+        if i - lb < 0 or i + lb >= len(candles):
+            return False
+        h = float(candles[i]["high"])
+        for j in range(i - lb, i + lb + 1):
+            if j == i:
                 continue
-            buckets.setdefault(bucket, []).append(row)
+            if float(candles[j]["high"]) >= h:
+                return False
+        return True
 
-        for row in rows:
-            bucket = row.get("time_bucket")
-            if bucket not in buckets:
+    def _is_swing_low(self, candles, i, lb):
+        if i - lb < 0 or i + lb >= len(candles):
+            return False
+        l = float(candles[i]["low"])
+        for j in range(i - lb, i + lb + 1):
+            if j == i:
                 continue
+            if float(candles[j]["low"]) <= l:
+                return False
+        return True
 
-            group = buckets[bucket]
+    def update(self, candles):
+        """Yangi yopilgan sham qo'shilgandan keyin chaqiriladi."""
 
-            results = [
-                x["result"] for x in group if x.get("result") is not None
-            ]
+        lb = CONFIG["SWING_LOOKBACK"]
 
-            if len(results) < CONFIG["TIME_MIN_SAMPLES"]:
-                row["time_good_pct"] = None
-            else:
-                good = sum(1 for x in results if x > 0)
-                row["time_good_pct"] = good / len(results)
+        i = len(candles) - 1 - lb
 
-    def add(self, symbol, interval, features, result, timestamp):
-
-        if features is None:
+        if i <= self._checked_idx or i < 0:
             return
 
-        dt = pd.to_datetime(timestamp, utc=True, errors="coerce")
+        self._checked_idx = i
 
-        if pd.isna(dt):
-            return
+        if self._is_swing_high(candles, i, lb):
+            self.swing_highs.append((i, float(candles[i]["high"])))
+            if len(self.swing_highs) > 20:
+                self.swing_highs.pop(0)
 
-        minutes = dt.hour * 60 + dt.minute
-        bucket_size = CONFIG["TIME_BUCKET_MINUTES"]
-        bucket = (minutes // bucket_size) * bucket_size
+        if self._is_swing_low(candles, i, lb):
+            self.swing_lows.append((i, float(candles[i]["low"])))
+            if len(self.swing_lows) > 20:
+                self.swing_lows.pop(0)
 
-        row = {
-            "features": features,
-            "result": result,
-            "time_bucket": bucket,
-            "timestamp": dt,
-        }
+    def buy_structure_ready(self, current_idx):
+        """2 ta swing high, 2-chisi 1-chisidan baland -> BUY zamin."""
 
-        self.rows.setdefault(self.key(symbol, interval), []).append(row)
+        if len(self.swing_highs) < 2:
+            return False, None
 
-    def similar(self, symbol, interval, features):
+        h_prev, h_last = self.swing_highs[-2], self.swing_highs[-1]
 
-        rows = self.rows.get(self.key(symbol, interval), [])
+        if h_last[1] <= h_prev[1]:
+            return False, None
 
-        candidates = []
+        max_age = CONFIG["SWING_MAX_AGE_CANDLES"]
+        if max_age > 0 and (current_idx - h_last[0]) > max_age:
+            return False, None
 
-        for row in rows:
+        if h_last[0] == self.last_buy_swing_idx:
+            return False, None  # bu juftlik allaqachon ishlatilgan
 
-            if row.get("features") is None:
-                continue
+        return True, h_last[0]
 
-            if row["features"].get("signal") != features.get("signal"):
-                continue
+    def sell_structure_ready(self, current_idx):
+        """2 ta swing low, 2-chisi 1-chisidan past -> SELL zamin."""
 
-            d = feature_distance(features, row["features"])
+        if len(self.swing_lows) < 2:
+            return False, None
 
-            if d <= 10:
-                candidates.append((d, row))
+        l_prev, l_last = self.swing_lows[-2], self.swing_lows[-1]
 
-        candidates.sort(key=lambda x: x[0])
+        if l_last[1] >= l_prev[1]:
+            return False, None
 
-        return [
-            x[1] for x in candidates[:CONFIG["MAX_HISTORY_CANDIDATES"]]
-        ]
+        max_age = CONFIG["SWING_MAX_AGE_CANDLES"]
+        if max_age > 0 and (current_idx - l_last[0]) > max_age:
+            return False, None
 
-    def evaluate(self, symbol, interval, features):
+        if l_last[0] == self.last_sell_swing_idx:
+            return False, None
 
-        candidates = self.similar(symbol, interval, features)
+        return True, l_last[0]
 
-        if len(candidates) < CONFIG["MIN_SIMILAR"]:
-            return {
-                "ok": False,
-                "reason": f"similar={len(candidates)} < {CONFIG['MIN_SIMILAR']}",
-                "count": len(candidates),
-                "good_pct": 0.0,
-            }
+    def check_signal(self, candles, idx):
+        """
+        idx - joriy (mumkin bo'lgan engulfing) shamning indeksi.
+        Qaytaradi: "BUY", "SELL" yoki None.
 
-        results = [
-            x["result"] for x in candidates if x.get("result") is not None
-        ]
+        Qat'iy qoida: 2 chuqqi FAQAT bullish engulfing bilan BUY
+        beradi; 2 pastlik FAQAT bearish engulfing bilan SELL beradi.
+        Mos kelmagan kombinatsiya signal bermaydi.
+        """
 
-        if not results:
-            return {
-                "ok": False,
-                "reason": "no historical results",
-                "count": 0,
-                "good_pct": 0.0,
-            }
+        eng = detect_engulfing(candles, idx)
 
-        good = sum(1 for x in results if x > 0)
-        good_pct = good / len(results)
+        if eng is None:
+            return None
 
-        current_time = features.get("timestamp")
+        if eng == "BUY":
+            ready, swing_idx = self.buy_structure_ready(idx)
+            if ready:
+                self.last_buy_swing_idx = swing_idx
+                return "BUY"
+            return None
 
-        if current_time is not None:
+        if eng == "SELL":
+            ready, swing_idx = self.sell_structure_ready(idx)
+            if ready:
+                self.last_sell_swing_idx = swing_idx
+                return "SELL"
+            return None
 
-            dt_current = pd.to_datetime(current_time, utc=True)
-
-            bucket = dt_current.hour * 60 + dt_current.minute
-            bucket = (
-                bucket // CONFIG["TIME_BUCKET_MINUTES"]
-            ) * CONFIG["TIME_BUCKET_MINUTES"]
-
-            time_rows = [
-                x for x in self.rows.get(self.key(symbol, interval), [])
-                if x.get("time_bucket") == bucket
-            ]
-
-            if len(time_rows) >= CONFIG["TIME_MIN_SAMPLES"]:
-
-                time_good = sum(
-                    1 for x in time_rows if x.get("result", 0) > 0
-                )
-
-                time_good_pct = time_good / len(time_rows)
-
-                if time_good_pct < CONFIG["TIME_MIN_GOOD_PCT"]:
-                    return {
-                        "ok": False,
-                        "reason": f"time filter {time_good_pct:.2%}",
-                        "count": len(results),
-                        "good_pct": good_pct,
-                    }
-
-        ok = good_pct >= CONFIG["SIMILAR_GOOD_PCT"]
-
-        return {
-            "ok": ok,
-            "reason": "passed" if ok else f"good={good_pct:.2%}",
-            "count": len(results),
-            "good_pct": good_pct,
-        }
-
-
-# ============================================================
-# DATA CONVERSION
-# ============================================================
-
-def td_values_to_candles(values):
-
-    candles = []
-
-    for row in values or []:
-        try:
-            dt = pd.to_datetime(row["datetime"], utc=True)
-
-            candles.append({
-                "timestamp": dt.to_pydatetime(),
-                "open": float(row["open"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-                "close": float(row["close"]),
-                "volume": float(row.get("volume", 0) or 0),
-                "closed": True,
-            })
-        except Exception:
-            continue
-
-    candles.sort(key=lambda x: x["timestamp"])
-
-    return candles
-
-
-# ============================================================
-# DISK CACHE
-# ============================================================
-
-def cache_path(symbol, interval):
-    safe = normalize_symbol(symbol).replace("/", "_").replace(" ", "")
-    return os.path.join(DATA_DIR, f"{safe}_{interval}.csv")
-
-
-def load_cache(symbol, interval):
-
-    path = cache_path(symbol, interval)
-
-    if not os.path.exists(path):
-        return []
-
-    try:
-        df = pd.read_csv(path)
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-
-        candles = []
-
-        for ts, o, h, l, c, v in zip(
-            df["timestamp"], df["open"], df["high"],
-            df["low"], df["close"], df["volume"]
-        ):
-            candles.append({
-                "timestamp": ts.to_pydatetime(),
-                "open": float(o),
-                "high": float(h),
-                "low": float(l),
-                "close": float(c),
-                "volume": float(v),
-                "closed": True,
-            })
-
-        candles.sort(key=lambda x: x["timestamp"])
-
-        log.info(
-            "Disk cache loaded %s %s: %d candles",
-            symbol, interval, len(candles)
-        )
-
-        return candles
-
-    except Exception as e:
-        log.error("Cache read error %s %s: %s", symbol, interval, e)
-        return []
-
-
-def save_cache(symbol, interval, candles):
-
-    try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-
-        path = cache_path(symbol, interval)
-        tmp = path + ".tmp"
-
-        df = pd.DataFrame(
-            [
-                {
-                    "timestamp": c["timestamp"].isoformat(),
-                    "open": c["open"],
-                    "high": c["high"],
-                    "low": c["low"],
-                    "close": c["close"],
-                    "volume": c.get("volume", 0.0),
-                }
-                for c in candles
-            ]
-        )
-
-        df.to_csv(tmp, index=False)
-        os.replace(tmp, path)
-
-        log.info(
-            "Disk cache saved %s %s: %d candles",
-            symbol, interval, len(candles)
-        )
-
-    except Exception as e:
-        log.error("Cache write error %s %s: %s", symbol, interval, e)
-
-
-# ============================================================
-# HISTORY DOWNLOAD (incremental)
-# ============================================================
-
-HISTORY_CACHE = {}
-
-
-async def fetch_range(client, symbol, interval, start_dt, end_dt):
-    """Pages backwards from end_dt to start_dt. Returns (candles, ok)."""
-
-    rows = []
-    ok = True
-    current_end = end_dt
-    step = timedelta(seconds=interval_seconds(interval))
-
-    for _ in range(400):
-
-        if current_end <= start_dt:
-            break
-
-        try:
-            data = await client.time_series(
-                symbol=symbol,
-                interval=interval,
-                outputsize=5000,
-                start_date=td_date(start_dt),
-                end_date=td_date(current_end),
-            )
-
-        except DailyLimitError as e:
-            client.daily_exhausted = True
-            log.error("Twelve Data DAILY credit limit reached: %s", e)
-            ok = False
-            break
-
-        except Exception as e:
-            log.error("History error %s %s: %s", symbol, interval, e)
-            ok = False
-            break
-
-        values = data.get("values", [])
-
-        if not values:
-            break
-
-        batch = td_values_to_candles(values)
-
-        if not batch:
-            break
-
-        rows.extend(batch)
-
-        log.info(
-            "History %s %s: +%d (total %d)",
-            symbol, interval, len(batch), len(rows)
-        )
-
-        earliest = batch[0]["timestamp"]
-
-        # fewer than a full page -> range exhausted, no extra request
-        if earliest <= start_dt or len(values) < 5000:
-            break
-
-        new_end = earliest - step
-
-        if new_end >= current_end:
-            break
-
-        current_end = new_end
-
-    return rows, ok
-
-
-async def download_history(client, symbol, interval):
-
-    symbol = normalize_symbol(symbol)
-
-    now = datetime.now(timezone.utc)
-    start_dt = now - timedelta(days=30 * CONFIG["HISTORY_MONTHS"])
-    step_s = interval_seconds(interval)
-
-    cached = [
-        c for c in load_cache(symbol, interval)
-        if c["timestamp"] >= start_dt
-    ]
-
-    new = []
-    ok = True
-
-    if not client.daily_exhausted:
-
-        if cached:
-
-            last_ts = cached[-1]["timestamp"]
-
-            if (now - last_ts).total_seconds() > step_s * 2:
-                tail, ok1 = await fetch_range(
-                    client, symbol, interval, last_ts, now
-                )
-                new += tail
-                ok = ok and ok1
-
-            first_ts = cached[0]["timestamp"]
-
-            if ok and (first_ts - start_dt) > timedelta(days=7):
-                head, ok2 = await fetch_range(
-                    client, symbol, interval, start_dt, first_ts
-                )
-                new += head
-                ok = ok and ok2
-
-        else:
-            new, ok = await fetch_range(
-                client, symbol, interval, start_dt, now
-            )
-
-    # Partial download on top of an existing cache would leave a gap
-    if not ok and cached:
-        new = []
-
-    unique = {}
-
-    for c in cached:
-        unique[c["timestamp"]] = c
-
-    for c in new:
-        unique[c["timestamp"]] = c
-
-    cutoff = now - timedelta(seconds=step_s)
-
-    candles = [
-        c for c in unique.values()
-        if start_dt <= c["timestamp"] <= cutoff
-    ]
-
-    candles.sort(key=lambda x: x["timestamp"])
-
-    if candles and (new or not cached):
-        save_cache(symbol, interval, candles)
-
-    return candles
-
-
-# ============================================================
-# BUILD HISTORY DB
-# ============================================================
-
-async def build_history_db(client, db, symbol, interval):
-
-    candles = await download_history(client, symbol, interval)
-
-    if len(candles) < 30:
-        log.warning(
-            "Not enough history %s %s: %d", symbol, interval, len(candles)
-        )
-        return candles
-
-    added = 0
-
-    for idx in range(
-        CONFIG["HISTORY_LOOKBACK_CANDLES"], len(candles) - 1
-    ):
-
-        signal = detect_engulfing(candles, idx)
-
-        if not signal:
-            continue
-
-        features = make_features(candles, idx, signal)
-
-        if not features:
-            continue
-
-        features["timestamp"] = candles[idx]["timestamp"]
-
-        result = evaluate_historical_trade(candles, idx, signal)
-
-        if result is None:
-            continue
-
-        db.add(symbol, interval, features, result, candles[idx]["timestamp"])
-
-        added += 1
-
-    db.build_time_stats(symbol, interval)
-
-    log.info(
-        "History DB %s %s: candles=%d setups=%d",
-        symbol, interval, len(candles), added
-    )
-
-    HISTORY_CACHE[(normalize_symbol(symbol), interval)] = candles[
-        -CONFIG["PRELOAD_CANDLES"]:
-    ]
-
-    return candles
+        return None
 
 
 # ============================================================
@@ -1146,11 +656,6 @@ def make_chart(
     entry=None, exit_price=None, signal=None,
     entry_time=None, exit_time=None,
 ):
-    """
-    FIX C: endi entry_time/exit_time berilsa, ochilish va yopilish
-    nuqtalarini candle ustida ANIQ belgilaydi (o'q/marker bilan),
-    shunchaki gorizontal chiziq emas.
-    """
 
     if not candles:
         return None
@@ -1174,12 +679,8 @@ def make_chart(
 
         ax.plot([i, i], [l, h], linewidth=1, color=color)
 
-        if cl >= o:
-            bottom = o
-            height = cl - o
-        else:
-            bottom = cl
-            height = o - cl
+        bottom = min(o, cl)
+        height = abs(cl - o)
 
         rect = plt.Rectangle(
             (i - width / 2, bottom), width, max(height, 1e-12),
@@ -1199,7 +700,6 @@ def make_chart(
             return len(data) - 1
         if ts in index_by_ts:
             return index_by_ts[ts]
-        # eng yaqin candle
         best_i, best_d = None, None
         for i, c in enumerate(data):
             d = abs((c["timestamp"] - ts).total_seconds())
@@ -1239,11 +739,9 @@ def make_chart(
     ax.grid(True, alpha=0.2)
 
     buf = io.BytesIO()
-
     plt.tight_layout()
     fig.savefig(buf, format="png", dpi=150)
     plt.close(fig)
-
     buf.seek(0)
 
     return buf.getvalue()
@@ -1253,13 +751,25 @@ def make_chart(
 # ENGINE
 # ============================================================
 
+def fill_price(price, side, entering):
+    slip = price * CONFIG["SPREAD_PCT"]
+    buy = side == "BUY"
+    if entering:
+        return price + slip if buy else price - slip
+    return price - slip if buy else price + slip
+
+
+def comm_cost(lot, price):
+    return lot * price * CONFIG["COMM_RATE"]
+
+
 class Engine:
 
-    def __init__(self, symbol, interval, history_db):
+    def __init__(self, symbol, interval):
 
         self.symbol = normalize_symbol(symbol)
         self.interval = interval
-        self.db = history_db
+        self.swings = SwingTracker()
 
         self.balance = CONFIG["BALANCE"]
         self.start_balance = self.balance
@@ -1277,10 +787,12 @@ class Engine:
 
         self.day_start_balance = self.balance
         self.day = datetime.now(timezone.utc).date()
+        self.daily_paused = False
 
         self.last_candle_time = time.time()
         self.pending = {}
-        self.last_report = None
+
+        self._sig_counter = 0
 
     def reset_day(self):
 
@@ -1291,6 +803,7 @@ class Engine:
             self.day_start_balance = self.balance
             self.consecutive_losses = 0
             self.self_blocked = False
+            self.daily_paused = False
 
     def daily_loss_limit_hit(self):
 
@@ -1306,7 +819,11 @@ class Engine:
         if self.self_blocked:
             return False
 
+        if self.daily_paused:
+            return False
+
         if self.daily_loss_limit_hit():
+            self.daily_paused = True
             return False
 
         if len(self.positions) >= CONFIG["MAX_OPEN_POS"]:
@@ -1314,43 +831,53 @@ class Engine:
 
         return True
 
+    def open_signals_for(self, signal=None):
+        if signal is None:
+            return len(self.positions)
+        return sum(1 for p in self.positions if p["signal"] == signal)
+
+    def has_opposite(self, signal):
+        opposite = "SELL" if signal == "BUY" else "BUY"
+        return any(p["signal"] == opposite for p in self.positions)
+
     def calc_lot(self, entry, sl, part_risk_ratio=1.0):
 
         risk_money = self.balance * CONFIG["RISK_PCT"] * part_risk_ratio
-
         sl_dist = abs(entry - sl)
 
         if sl_dist <= 0:
-            return 0.0
+            return 0.0, False
 
         lot = risk_money / sl_dist
-
+        capped = lot > CONFIG["LOT_MAX"] or lot < CONFIG["LOT_MIN"]
         lot = max(CONFIG["LOT_MIN"], min(lot, CONFIG["LOT_MAX"]))
 
-        return lot
+        return lot, capped
 
-    def open_local(self, signal, entry, sl, history_result=None,
-                   opened_at=None):
+    def open_local(self, signal, entry, sl, opened_at=None,
+                   swing_info=None):
 
         risk = (entry - sl) if signal == "BUY" else (sl - entry)
 
         if risk <= 0:
             return None
 
-        lot_a = self.calc_lot(entry, sl, CONFIG["PART_RISK_RATIO"])
-        lot_b = self.calc_lot(entry, sl, CONFIG["PART_RISK_RATIO"])
+        lot_a, capped_a = self.calc_lot(entry, sl, CONFIG["PART_RISK_RATIO"])
+        lot_b, capped_b = self.calc_lot(entry, sl, CONFIG["PART_RISK_RATIO"])
 
         if lot_a <= 0:
             return None
 
         tp_a = (
-            entry + risk * CONFIG["A_TP_R"]
-            if signal == "BUY"
+            entry + risk * CONFIG["A_TP_R"] if signal == "BUY"
             else entry - risk * CONFIG["A_TP_R"]
         )
 
+        self._sig_counter += 1
+
         p = {
             "id": f"{self.symbol}-{self.interval}-{int(time.time() * 1000)}",
+            "sig_id": self._sig_counter,
             "symbol": self.symbol,
             "interval": self.interval,
             "signal": signal,
@@ -1362,19 +889,19 @@ class Engine:
             "lot_a": lot_a,
             "lot_b": lot_b,
             "tp_a": tp_a,
-            "tp_b": None,
             "a_closed": False,
             "b_sl": sl,
             "commission": 0.0,
             "gross": 0.0,
             "opened": opened_at or datetime.now(timezone.utc),
             "trail_r": 0.0,
-            # FIX C: yopilishda ko'rsatish uchun ochilish konteksti
-            "history_result": history_result or {},
+            "lot_capped": capped_a or capped_b,
+            "swing_info": swing_info or {},
+            "signal_net": 0.0,
+            "signal_legs_closed": 0,
         }
 
-        open_comm = p["lot"] * p["entry"] * CONFIG["COMM_RATE"]
-
+        open_comm = comm_cost(p["lot"], p["entry"])
         p["commission"] += open_comm
         self.total_comm += open_comm
 
@@ -1382,13 +909,9 @@ class Engine:
 
         return p
 
-    # --------------------------------------------------------
-    # FIX C: to'liq Telegram YOPILISH xabari + grafik
-    # --------------------------------------------------------
-
     async def _send_close_report(self, p, exit_price, reason,
                                  net_pnl, gross, fraction, r_multiple,
-                                 exit_time):
+                                 exit_time, signal_final_r=None):
 
         emoji = "✅" if net_pnl > 0.01 else ("❌" if net_pnl < -0.01 else "⚪")
 
@@ -1409,29 +932,35 @@ class Engine:
 
         reason_text = reason_map.get(reason, reason)
 
-        hist = p.get("history_result") or {}
+        si = p.get("swing_info") or {}
 
         txt = (
             f"{emoji} <b>YOPILDI [{part_label}] {p['symbol']} "
             f"[{p['interval']}]</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"📌 Sabab: {reason_text}\n"
-            f"🎯 R: <b>{r_multiple:+.2f}R</b>\n"
+            f"🎯 R (shu oyoq): <b>{r_multiple:+.2f}R</b>\n"
             f"💵 Entry: {p['entry']:.6f}\n"
             f"🚪 Exit: {exit_price:.6f}\n"
             f"💵 Gross: ${gross:+.2f}\n"
             f"🔻 Comm: -${p['commission']:.2f}\n"
             f"💰 Net (shu yopilish): <b>${net_pnl:+.2f}</b>\n"
-            f"📈 Balance: <b>${self.balance:.2f}</b>\n"
-            f"🔥 Ketma-ket zarar: {self.consecutive_losses}"
+            f"📈 Balance: <b>${self.balance:.2f}</b>"
         )
 
-        if hist:
+        if signal_final_r is not None:
             txt += (
                 f"\n━━━━━━━━━━━━━━━━━━\n"
-                f"📚 Ochilishdagi tarix: similar "
-                f"<b>{hist.get('count', 0)}</b>, good "
-                f"<b>{hist.get('good_pct', 0):.1%}</b>"
+                f"🧾 <b>SIGNAL YAKUNI (A+B):</b> "
+                f"{signal_final_r:+.2f}R\n"
+                f"🔥 Ketma-ket zarar (signal bo'yicha): "
+                f"{self.consecutive_losses}"
+            )
+
+        if si:
+            txt += (
+                f"\n📐 Struktura: swing {si.get('type', '')} "
+                f"{si.get('prev', 0):.4f} → {si.get('last', 0):.4f}"
             )
 
         if self.self_blocked:
@@ -1457,33 +986,38 @@ class Engine:
                 ),
             )
 
-    def close_signal(self, p, exit_price, reason, fraction=1.0):
+    def close_signal(self, p, exit_price_raw, reason, fraction=1.0):
 
         if p not in self.positions:
             return
 
         lot = p["lot"] * fraction
 
+        exit_price = fill_price(exit_price_raw, p["signal"], entering=False)
+
         if p["signal"] == "BUY":
-            gross = (exit_price - p["entry"]) * lot
+            gross_quote = (exit_price - p["entry"]) * lot
         else:
-            gross = (p["entry"] - exit_price) * lot
+            gross_quote = (p["entry"] - exit_price) * lot
 
-        close_comm = lot * exit_price * CONFIG["COMM_RATE"]
+        close_comm = comm_cost(lot, exit_price)
 
-        p["commission"] += close_comm
-        self.total_comm += close_comm
+        gross_usd = to_account_ccy(p["symbol"], gross_quote, exit_price)
+        comm_usd = to_account_ccy(p["symbol"], close_comm, exit_price)
 
-        net_pnl = gross - close_comm
+        p["commission"] += comm_usd
+        self.total_comm += comm_usd
+
+        net_pnl = gross_usd - comm_usd
 
         self.balance += net_pnl
-        self.gross_pnl += gross
-        p["gross"] += gross
+        self.gross_pnl += gross_usd
+        p["gross"] += gross_usd
 
         exit_time = datetime.now(timezone.utc)
 
-        risk_usd = p["risk"] * lot
-        r_multiple = net_pnl / risk_usd if risk_usd > 0 else 0.0
+        risk_usd_leg = to_account_ccy(p["symbol"], p["risk"] * lot, exit_price)
+        r_multiple = net_pnl / risk_usd_leg if risk_usd_leg > 0 else 0.0
 
         self.trades.append({
             "time": exit_time,
@@ -1496,26 +1030,42 @@ class Engine:
             "reason": reason,
         })
 
-        if net_pnl > 0:
-            self.stats["wins"] += 1
-            self.consecutive_losses = 0
+        p["signal_net"] += net_pnl
+        p["signal_legs_closed"] += 1
 
-        elif net_pnl < 0:
-            self.stats["losses"] += 1
-            self.consecutive_losses += 1
+        full_close = fraction >= 0.999
+        signal_final_r = None
+
+        if full_close:
+
+            total_risk_usd = to_account_ccy(
+                p["symbol"], p["risk"] * (p["lot_a"] + p["lot_b"]),
+                exit_price,
+            )
+
+            signal_final_r = (
+                p["signal_net"] / total_risk_usd if total_risk_usd > 0 else 0.0
+            )
+
+            if p["signal_net"] > 0:
+                self.stats["wins"] += 1
+                self.consecutive_losses = 0
+            elif p["signal_net"] < 0:
+                self.stats["losses"] += 1
+                self.consecutive_losses += 1
 
         newly_blocked = False
 
-        if self.consecutive_losses >= CONFIG["MAX_CONSECUTIVE_LOSSES"]:
+        if full_close and self.consecutive_losses >= CONFIG["MAX_CONSECUTIVE_LOSSES"]:
             if not self.self_blocked:
                 newly_blocked = True
             self.self_blocked = True
 
-        # FIX C: har yopilishda to'liq hisobot + grafik yuborish
         asyncio.create_task(
             self._send_close_report(
-                p, exit_price, reason, net_pnl, gross,
+                p, exit_price, reason, net_pnl, gross_usd,
                 fraction, r_multiple, exit_time,
+                signal_final_r=signal_final_r,
             )
         )
 
@@ -1524,13 +1074,12 @@ class Engine:
                 TG_CLIENT.send(
                     f"🛑 <b>SELF BLOCK</b>\n"
                     f"{self.symbol} {self.interval}\n"
-                    f"{CONFIG['MAX_CONSECUTIVE_LOSSES']} consecutive losses."
+                    f"{CONFIG['MAX_CONSECUTIVE_LOSSES']} consecutive "
+                    f"LOSING SIGNALS."
                 )
             )
 
-        # (o'zgarmagan) faqat to'liq yopilishda positions'dan olib
-        # tashlanadi, shunda TP_A B qismini o'chirib qo'ymaydi.
-        if fraction >= 0.999:
+        if full_close:
             try:
                 self.positions.remove(p)
             except ValueError:
@@ -1556,17 +1105,13 @@ class Engine:
 
         tp_hit = price >= p["tp_a"] if is_buy else price <= p["tp_a"]
 
-        # ---- TP A (partial close) ----
         if not p["a_closed"] and tp_hit:
 
             old_lot = p["lot"]
 
             if old_lot > 0:
 
-                self.close_signal(
-                    p, p["tp_a"], "TP_A",
-                    fraction=p["lot_a"] / old_lot
-                )
+                self.close_signal(p, p["tp_a"], "TP_A", fraction=p["lot_a"] / old_lot)
 
                 p["a_closed"] = True
 
@@ -1575,25 +1120,19 @@ class Engine:
                     p["lot_a"] = 0
                     p["b_sl"] = entry
 
-        # ---- Break-even ----
         if p in self.positions and r_now >= CONFIG["BE_AT_R"]:
-            p["b_sl"] = (
-                max(p["b_sl"], entry) if is_buy else min(p["b_sl"], entry)
-            )
+            p["b_sl"] = max(p["b_sl"], entry) if is_buy else min(p["b_sl"], entry)
 
-        # ---- Trailing ----
         if p in self.positions and r_now >= CONFIG["TRAIL_STEP_R"]:
 
             trail_r = min(
-                math.floor(r_now / CONFIG["TRAIL_STEP_R"])
-                * CONFIG["TRAIL_STEP_R"],
+                math.floor(r_now / CONFIG["TRAIL_STEP_R"]) * CONFIG["TRAIL_STEP_R"],
                 CONFIG["MAX_TRAIL_R"]
             )
 
             if trail_r > p["trail_r"]:
 
                 p["trail_r"] = trail_r
-
                 shift = risk * max(0, trail_r - CONFIG["TRAIL_STEP_R"])
 
                 if is_buy:
@@ -1601,7 +1140,6 @@ class Engine:
                 else:
                     p["b_sl"] = min(p["b_sl"], entry - shift)
 
-        # ---- Stop ----
         if p in self.positions:
 
             stop_hit = price <= p["b_sl"] if is_buy else price >= p["b_sl"]
@@ -1613,63 +1151,68 @@ class Engine:
         for p in list(self.positions):
             self.manage_local(p, price)
 
-    def history_check(self, features):
-        return self.db.evaluate(self.symbol, self.interval, features)
-
-    async def open_signal(self, signal, candle):
+    async def open_signal(self, signal, candle, swing_info):
 
         if not self.can_trade():
             self.stats["blocked"] += 1
             return
 
-        self.stats["signals"] += 1
-
-        entry = float(candle["close"])
-
-        sl = float(candle["low"]) if signal == "BUY" else float(candle["high"])
-
-        buf = abs(entry) * CONFIG["SL_BUF"] / 100000
-
-        if signal == "BUY":
-            sl -= buf
-        else:
-            sl += buf
-
-        features = make_features(
-            self.candles, len(self.candles) - 1, signal
-        )
-
-        if not features:
-            return
-
-        features["timestamp"] = candle["timestamp"]
-
-        result = self.history_check(features)
-
-        if not result["ok"]:
+        if self.has_opposite(signal):
             log.info(
-                "FILTER %s %s %s: %s",
-                self.symbol, self.interval, signal, result["reason"]
+                "%s %s %s: RAD ETILDI - qarshi yo'nalish ochiq",
+                self.symbol, self.interval, signal
             )
             return
 
+        if self.open_signals_for(signal) >= CONFIG["MAX_SIGNALS_PER_SYMBOL"]:
+            log.info(
+                "%s %s %s: RAD ETILDI - limit (%d) dan oshdi",
+                self.symbol, self.interval, signal,
+                CONFIG["MAX_SIGNALS_PER_SYMBOL"]
+            )
+            return
+
+        self.stats["signals"] += 1
+
+        entry_raw = float(candle["close"])
+
+        rng = candle_range(candle)
+        buf = rng * CONFIG["SL_BUF_FRAC"]
+
+        if signal == "BUY":
+            sl = float(candle["low"]) - buf
+        else:
+            sl = float(candle["high"]) + buf
+
+        entry_fill = fill_price(entry_raw, signal, entering=True)
+
         p = self.open_local(
-            signal, entry, sl,
-            history_result=result,
+            signal, entry_fill, sl,
             opened_at=candle["timestamp"],
+            swing_info=swing_info,
         )
 
         if not p:
             return
 
+        cap_note = " ⚠️ (lot LOT_MIN/LOT_MAX bilan cheklandi)" if p["lot_capped"] else ""
+
+        si_txt = ""
+        if swing_info:
+            si_txt = (
+                f"📐 Struktura: {swing_info.get('type', '')} "
+                f"{swing_info.get('prev', 0):.4f} → "
+                f"{swing_info.get('last', 0):.4f}\n"
+            )
+
         msg = (
             f"🟢 <b>{signal}</b>\n"
             f"<b>{self.symbol}</b> | {self.interval}\n"
-            f"Entry: {entry:.6f}\n"
+            f"{si_txt}"
+            f"Entry: {entry_fill:.6f}\n"
             f"SL: {sl:.6f}\n"
             f"TP A: {p['tp_a']:.6f}\n"
-            f"Similar: {result['count']}\n"
-            f"Good: {result['good_pct']:.2%}\n"
+            f"Lot: {p['lot']:.4f}{cap_note}\n"
             f"Balance: {self.balance:.2f}"
         )
 
@@ -1677,7 +1220,7 @@ class Engine:
 
         chart = make_chart(
             self.candles, self.symbol, self.interval,
-            entry=entry, signal=signal, entry_time=candle["timestamp"],
+            entry=entry_fill, signal=signal, entry_time=candle["timestamp"],
         )
 
         if chart:
@@ -1704,17 +1247,41 @@ class Engine:
         if len(self.candles) < 2:
             return
 
+        # avval swing'larni yangilaymiz, keyin signalni tekshiramiz
+        self.swings.update(self.candles)
+
         idx = len(self.candles) - 1
 
-        signal = detect_engulfing(self.candles, idx)
+        signal = self.swings.check_signal(self.candles, idx)
 
         if signal:
-            await self.open_signal(signal, candle)
+
+            if signal == "BUY":
+                h_prev, h_last = self.swings.swing_highs[-2], self.swings.swing_highs[-1]
+                swing_info = {"type": "HIGH", "prev": h_prev[1], "last": h_last[1]}
+            else:
+                l_prev, l_last = self.swings.swing_lows[-2], self.swings.swing_lows[-1]
+                swing_info = {"type": "LOW", "prev": l_prev[1], "last": l_last[1]}
+
+            await self.open_signal(signal, candle, swing_info)
 
         max_keep = max(CONFIG["HISTORY_LIMIT"], CONFIG["PRELOAD_CANDLES"])
 
         if len(self.candles) > max_keep:
+            trim = len(self.candles) - max_keep
             self.candles = self.candles[-max_keep:]
+            # swing indekslarini siljitish
+            self.swings.swing_highs = [
+                (i - trim, v) for i, v in self.swings.swing_highs if i - trim >= 0
+            ]
+            self.swings.swing_lows = [
+                (i - trim, v) for i, v in self.swings.swing_lows if i - trim >= 0
+            ]
+            self.swings._checked_idx -= trim
+            if self.swings.last_buy_swing_idx is not None:
+                self.swings.last_buy_swing_idx -= trim
+            if self.swings.last_sell_swing_idx is not None:
+                self.swings.last_sell_swing_idx -= trim
 
     async def handle_realtime(self, candle):
 
@@ -1742,12 +1309,23 @@ class Engine:
 
         idx = len(test_candles) - 1
 
-        signal = detect_engulfing(test_candles, idx)
+        # swing struktura FAQAT yopilgan shamlardan hisoblanadi
+        # (self.swings holati); shu bilan joriy (hali yopilmagan)
+        # shamda faqat engulfing formasi tekshiriladi.
+        eng = detect_engulfing(test_candles, idx)
 
-        if not signal:
+        if not eng:
             return
 
-        key = signal
+        if eng == "BUY":
+            ready, _ = self.swings.buy_structure_ready(idx)
+        else:
+            ready, _ = self.swings.sell_structure_ready(idx)
+
+        if not ready:
+            return
+
+        key = eng
         now = time.time()
 
         pending = self.pending.get(key)
@@ -1761,7 +1339,6 @@ class Engine:
             return
 
         pending["ticks"] += 1
-
         elapsed = now - pending["started"]
 
         if (
@@ -1769,7 +1346,7 @@ class Engine:
             and elapsed >= CONFIG["CONFIRM_SECONDS"]
         ):
 
-            candle_key = f"{candle['timestamp']}-{signal}"
+            candle_key = f"{candle['timestamp']}-{eng}"
 
             if self.pending.get("executed") == candle_key:
                 return
@@ -1779,8 +1356,25 @@ class Engine:
             old = self.candles
             self.candles = test_candles
 
+            signal = self.swings.check_signal(self.candles, idx)
+
             try:
-                await self.open_signal(signal, candle)
+                if signal:
+                    if signal == "BUY":
+                        h_prev, h_last = (
+                            self.swings.swing_highs[-2], self.swings.swing_highs[-1]
+                        )
+                        swing_info = {
+                            "type": "HIGH", "prev": h_prev[1], "last": h_last[1]
+                        }
+                    else:
+                        l_prev, l_last = (
+                            self.swings.swing_lows[-2], self.swings.swing_lows[-1]
+                        )
+                        swing_info = {
+                            "type": "LOW", "prev": l_prev[1], "last": l_last[1]
+                        }
+                    await self.open_signal(signal, candle, swing_info)
             finally:
                 self.candles = old
 
@@ -1792,31 +1386,7 @@ class Engine:
 ENGINES = {}
 
 
-# ============================================================
-# PRELOAD CURRENT
-# ============================================================
-
 async def preload_current(client, engine):
-
-    cache_key = (normalize_symbol(engine.symbol), engine.interval)
-
-    cached = HISTORY_CACHE.get(cache_key)
-
-    if cached:
-        engine.candles = [dict(c) for c in cached]
-        engine.last_candle_time = time.time()
-        log.info(
-            "Preload from history cache %s %s: %d candles",
-            engine.symbol, engine.interval, len(engine.candles)
-        )
-        return
-
-    if client.daily_exhausted:
-        log.warning(
-            "Preload skipped %s %s (daily API limit)",
-            engine.symbol, engine.interval
-        )
-        return
 
     try:
         data = await client.time_series(
@@ -1825,21 +1395,44 @@ async def preload_current(client, engine):
             outputsize=CONFIG["PRELOAD_CANDLES"] + 2,
         )
 
-        candles = td_values_to_candles(data.get("values", []))
+        values = data.get("values", [])
+
+        candles = []
+
+        for row in values:
+            try:
+                dt = pd.to_datetime(row["datetime"], utc=True)
+                candles.append({
+                    "timestamp": dt.to_pydatetime(),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "closed": True,
+                })
+            except Exception:
+                continue
+
+        candles.sort(key=lambda x: x["timestamp"])
 
         if candles:
             engine.candles = candles[-CONFIG["PRELOAD_CANDLES"]:]
             engine.last_candle_time = time.time()
+
+            # preload qilingan tarixdan ham swing'larni tiklaymiz,
+            # shunda bot ishga tushgan zahoti tayyor struktura bilan
+            # boshlaydi (nol emas)
+            for i in range(len(engine.candles)):
+                engine.swings.update(engine.candles[:i + 1])
+
             log.info(
-                "Preload API %s %s: %d candles",
-                engine.symbol, engine.interval, len(engine.candles)
+                "Preload %s %s: %d candles, swings H=%d L=%d",
+                engine.symbol, engine.interval, len(engine.candles),
+                len(engine.swings.swing_highs), len(engine.swings.swing_lows)
             )
 
     except Exception as e:
-        log.error(
-            "Preload error %s %s: %s",
-            engine.symbol, engine.interval, e
-        )
+        log.error("Preload error %s %s: %s", engine.symbol, engine.interval, e)
 
 
 # ============================================================
@@ -1850,11 +1443,9 @@ LIVE_CANDLES = {}
 
 
 def candle_bucket(timestamp, interval):
-
     sec = interval_seconds(interval)
     ts = int(timestamp.timestamp())
     bucket = (ts // sec) * sec
-
     return datetime.fromtimestamp(bucket, tz=timezone.utc)
 
 
@@ -1864,7 +1455,6 @@ async def process_price_tick(symbol, price, timestamp=None):
 
     if timestamp is None:
         timestamp = datetime.now(timezone.utc)
-
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
 
@@ -1876,56 +1466,36 @@ async def process_price_tick(symbol, price, timestamp=None):
             continue
 
         interval = engine.interval
-
         bucket = candle_bucket(timestamp, interval)
-
         live_key = (symbol, interval)
 
         current = LIVE_CANDLES.get(live_key)
 
         if current is None:
-
             current = {
-                "timestamp": bucket,
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": 0.0,
-                "closed": False,
+                "timestamp": bucket, "open": price, "high": price,
+                "low": price, "close": price, "closed": False,
             }
-
             LIVE_CANDLES[live_key] = current
-
             await engine.handle_realtime(current)
             continue
 
         if current["timestamp"] == bucket:
-
             current["high"] = max(current["high"], price)
             current["low"] = min(current["low"], price)
             current["close"] = price
-
             await engine.handle_realtime(current)
             continue
 
         previous = dict(current)
         previous["closed"] = True
-
         await engine.handle_closed(previous)
 
         new_candle = {
-            "timestamp": bucket,
-            "open": price,
-            "high": price,
-            "low": price,
-            "close": price,
-            "volume": 0.0,
-            "closed": False,
+            "timestamp": bucket, "open": price, "high": price,
+            "low": price, "close": price, "closed": False,
         }
-
         LIVE_CANDLES[live_key] = new_candle
-
         await engine.handle_realtime(new_candle)
 
 
@@ -1933,11 +1503,7 @@ async def process_price_tick(symbol, price, timestamp=None):
 # PRICE WEBSOCKET
 # ============================================================
 
-# FIX B: health_check shu Event orqali market_stream'ga
-# "majburiy qayta ulan" deb signal beradi.
 RECONNECT_EVENT = asyncio.Event()
-
-# FIX B: bitta uzilish hodisasi uchun faqat bitta marta ogohlantirish
 _ALERT_SENT = False
 _LAST_TICK_TS = {"t": time.time()}
 
@@ -1947,7 +1513,6 @@ async def market_stream(client):
     global _ALERT_SENT
 
     symbols = [normalize_symbol(x) for x in CONFIG["SYMBOLS"]]
-
     reconnect_delay = 3
 
     while True:
@@ -1959,7 +1524,6 @@ async def market_stream(client):
             log.info("Twelve Data narx oqimiga ulanmoqda...")
 
             stream_gen = client.price_stream(symbols)
-
             recv_task = None
 
             async def _next_message():
@@ -1978,14 +1542,10 @@ async def market_stream(client):
                 )
 
                 if wait_event in done:
-                    # FIX B: health_check majburiy reconnect so'radi
                     recv_task.cancel()
                     for t in pending:
                         t.cancel()
-                    log.warning(
-                        "market_stream: health_check reconnect so'radi, "
-                        "socket qayta ochilmoqda"
-                    )
+                    log.warning("market_stream: majburiy reconnect")
                     raise ConnectionError("forced_reconnect")
 
                 wait_event.cancel()
@@ -1994,15 +1554,7 @@ async def market_stream(client):
 
                     raw = recv_task.result()
                     recv_task = None
-
                     reconnect_delay = 3
-                    _LAST_TICK_TS["t"] = time.time()
-
-                    if _ALERT_SENT:
-                        _ALERT_SENT = False
-                        await TG_CLIENT.send(
-                            "✅ <b>Market data oqimi tiklandi</b>"
-                        )
 
                     try:
 
@@ -2016,39 +1568,21 @@ async def market_stream(client):
 
                         event = msg.get("event")
 
-                        # ---------------------------------------
-                        # FIX A: subscribe-status/heartbeat/boshqa
-                        # xato hodisalari endi log qilinadi va
-                        # muvaffaqiyatsiz obuna Telegram'ga
-                        # ogohlantiriladi (jimgina tashlanmaydi).
-                        # ---------------------------------------
-
                         if event == "subscribe-status":
 
                             status = msg.get("status")
-                            success = msg.get("success") or []
                             fails = msg.get("fails") or []
 
                             log.info(
-                                "TD subscribe-status: status=%s "
-                                "success=%s fails=%s",
-                                status, success, fails
+                                "TD subscribe-status: status=%s fails=%s",
+                                status, fails
                             )
 
                             if fails:
                                 await TG_CLIENT.send(
                                     "⚠️ <b>Twelve Data OBUNA "
                                     "MUVAFFAQIYATSIZ</b>\n"
-                                    f"Fails: {fails}\n"
-                                    "Symbol nomi yoki tarif rejasini "
-                                    "tekshiring."
-                                )
-
-                            if status and status != "ok":
-                                await TG_CLIENT.send(
-                                    f"⚠️ <b>Twelve Data subscribe-status: "
-                                    f"{status}</b>\n<code>{str(msg)[:500]}"
-                                    f"</code>"
+                                    f"Fails: {fails}"
                                 )
 
                             continue
@@ -2056,45 +1590,36 @@ async def market_stream(client):
                         if event == "heartbeat":
                             continue
 
-                        if event in ("error",) or msg.get("code") not in (
-                            None, 200,
-                        ):
-                            log.error(
-                                "TD stream error message: %s", str(msg)[:500]
-                            )
+                        if event in ("error",) or msg.get("code") not in (None, 200):
+                            log.error("TD stream error: %s", str(msg)[:500])
                             await TG_CLIENT.send(
-                                "⚠️ <b>Twelve Data stream xato "
-                                f"xabari</b>\n<code>{str(msg)[:500]}</code>"
+                                f"⚠️ <b>Twelve Data stream xato</b>\n"
+                                f"<code>{str(msg)[:500]}</code>"
                             )
                             continue
 
                         symbol = msg.get("symbol") or msg.get("code")
-
-                        price = (
-                            msg.get("price")
-                            or msg.get("close")
-                            or msg.get("value")
-                        )
+                        price = msg.get("price") or msg.get("close") or msg.get("value")
 
                         if not symbol or price is None:
-                            # tanimagan xabar turi -> yo'qotmaslik uchun log
-                            log.debug("TD stream noma'lum xabar: %s", msg)
                             continue
 
-                        ts_value = msg.get("timestamp") or msg.get("time")
+                        # ---- faqat HAQIQIY narx tick'ida yangilanadi ----
+                        _LAST_TICK_TS["t"] = time.time()
 
+                        if _ALERT_SENT:
+                            _ALERT_SENT = False
+                            await TG_CLIENT.send("✅ <b>Market data oqimi tiklandi</b>")
+
+                        ts_value = msg.get("timestamp") or msg.get("time")
                         ts = None
 
                         if ts_value is not None:
                             try:
                                 if isinstance(ts_value, (int, float)):
-                                    ts = datetime.fromtimestamp(
-                                        float(ts_value), tz=timezone.utc
-                                    )
+                                    ts = datetime.fromtimestamp(float(ts_value), tz=timezone.utc)
                                 else:
-                                    ts = pd.to_datetime(
-                                        ts_value, utc=True
-                                    ).to_pydatetime()
+                                    ts = pd.to_datetime(ts_value, utc=True).to_pydatetime()
                             except Exception:
                                 ts = None
 
@@ -2108,14 +1633,12 @@ async def market_stream(client):
 
         except Exception as e:
             log.error("Market stream disconnected: %s", e)
-
             await asyncio.sleep(reconnect_delay)
-
             reconnect_delay = min(reconnect_delay * 2, 60)
 
 
 # ============================================================
-# REPORT
+# REPORT / HEALTH / DIAGNOSTICS
 # ============================================================
 
 async def daily_report():
@@ -2129,44 +1652,25 @@ async def daily_report():
     for engine in ENGINES.values():
 
         pnl = engine.balance - CONFIG["BALANCE"]
-
         total_balance += engine.balance
         total_pnl += pnl
         total_trades += len(engine.trades)
 
         lines.append(
             f"<b>{engine.symbol} {engine.interval}</b> | "
-            f"Balance {engine.balance:.2f} | "
-            f"PnL {pnl:.2f} | "
-            f"W {engine.stats['wins']} | "
-            f"L {engine.stats['losses']}"
+            f"Balance {engine.balance:.2f} | PnL {pnl:.2f} | "
+            f"W {engine.stats['wins']} | L {engine.stats['losses']}"
         )
 
     lines.extend([
-        "",
-        f"Total balance: {total_balance:.2f}",
-        f"Total PnL: {total_pnl:.2f}",
-        f"Trades: {total_trades}",
+        "", f"Total balance: {total_balance:.2f}",
+        f"Total PnL: {total_pnl:.2f}", f"Trades: {total_trades}",
     ])
 
     await TG_CLIENT.send("\n".join(lines))
 
 
-# ============================================================
-# HEALTH CHECK  (FIX B)
-# ============================================================
-
 async def health_check():
-    """
-    Avvalgi versiya faqat har 60 sekundda ogohlantirar edi va
-    hech qachon o'zi tuzatmasdi. Endi:
-      - Global oxirgi tick vaqtiga qaraydi (barcha symbol/TF umumiy
-        bitta socket orqali kelgani uchun bitta global soat yetarli).
-      - STREAM_STALE_SEC dan uzoqroq jim bo'lsa: BIR marta ogohlantiradi
-        va RECONNECT_EVENT orqali market_stream'ni majburan qayta
-        ulanishga majbur qiladi.
-      - Tiklangach market_stream o'zi "tiklandi" deb xabar beradi.
-    """
 
     global _ALERT_SENT
 
@@ -2182,13 +1686,12 @@ async def health_check():
 
                 await TG_CLIENT.send(
                     "⚠️ <b>MARKET DATA JIM</b>\n"
-                    f"{silent / 60:.1f} daqiqadan beri tick yo'q.\n"
-                    "🔄 Socket majburiy qayta ulanmoqda..."
+                    f"{silent / 60:.1f} daqiqadan beri HAQIQIY narx "
+                    f"tick'i yo'q.\n🔄 Socket majburiy qayta ulanmoqda..."
                 )
 
                 RECONNECT_EVENT.set()
 
-            # ham per-engine eski loglash (diagnostika uchun foydali)
             for key, engine in ENGINES.items():
                 age = now - engine.last_candle_time
                 if age > CONFIG["SOCKET_TIMEOUT_MIN"] * 60:
@@ -2203,10 +1706,6 @@ async def health_check():
         await asyncio.sleep(20)
 
 
-# ============================================================
-# DIAGNOSTICS
-# ============================================================
-
 async def diagnostics_loop():
 
     last_day = None
@@ -2214,7 +1713,6 @@ async def diagnostics_loop():
     while True:
 
         try:
-
             now = datetime.now(timezone.utc)
 
             if (
@@ -2222,7 +1720,6 @@ async def diagnostics_loop():
                 and now.minute < 5
                 and last_day != now.date()
             ):
-
                 last_day = now.date()
 
                 lines = ["🔎 <b>BOT DIAGNOSTICS</b>", ""]
@@ -2231,9 +1728,12 @@ async def diagnostics_loop():
                     lines.append(
                         f"{engine.symbol} {engine.interval}: "
                         f"candles={len(engine.candles)}, "
+                        f"swings H={len(engine.swings.swing_highs)} "
+                        f"L={len(engine.swings.swing_lows)}, "
                         f"positions={len(engine.positions)}, "
                         f"signals={engine.stats['signals']}, "
-                        f"blocked={engine.self_blocked}"
+                        f"blocked={engine.self_blocked}, "
+                        f"daily_paused={engine.daily_paused}"
                     )
 
                 await TG_CLIENT.send("\n".join(lines))
@@ -2244,10 +1744,6 @@ async def diagnostics_loop():
         await asyncio.sleep(30)
 
 
-# ============================================================
-# REPORT LOOP
-# ============================================================
-
 async def report_loop():
 
     last_day = None
@@ -2255,7 +1751,6 @@ async def report_loop():
     while True:
 
         try:
-
             now = datetime.now(timezone.utc)
 
             if (
@@ -2263,9 +1758,7 @@ async def report_loop():
                 and now.minute < 5
                 and last_day != now.date()
             ):
-
                 last_day = now.date()
-
                 await daily_report()
 
         except Exception as e:
@@ -2290,18 +1783,12 @@ async def main():
         log.warning("TELEGRAM_CHAT_ID is missing")
 
     log.info("=" * 50)
-    log.info("EngulfingTrend Bot v6.2.0")
-    log.info("Market data: Twelve Data")
+    log.info("EngulfingTrend Bot v7.0.0 (swing structure, no history filter)")
     log.info("Symbols: %s", CONFIG["SYMBOLS"])
     log.info("Intervals: %s", CONFIG["INTERVALS"])
-    log.info("Commission: %.8f", CONFIG["COMM_RATE"])
-    log.info("Data dir: %s", DATA_DIR)
     log.info("=" * 50)
 
-    os.makedirs(DATA_DIR, exist_ok=True)
-
     client = TwelveData(TWELVE_DATA_API_KEY)
-    db = HistoricalDB()
 
     _LAST_TICK_TS["t"] = time.time()
 
@@ -2311,52 +1798,26 @@ async def main():
 
         symbols = [normalize_symbol(s) for s in CONFIG["SYMBOLS"]]
         intervals = CONFIG["INTERVALS"]
-        total = len(symbols) * len(intervals)
-        n = 0
-
-        await TG_CLIENT.send(
-            "⏳ <b>EngulfingTrend</b>: history loading "
-            f"({total} datasets). First run can take a while."
-        )
-
-        # ---------------- BUILD HISTORY ----------------
 
         for symbol in symbols:
             for interval in intervals:
-
-                n += 1
-
-                log.info(
-                    "Building history [%d/%d]: %s %s",
-                    n, total, symbol, interval
-                )
-
-                await build_history_db(client, db, symbol, interval)
-
-        # ---------------- CREATE ENGINES ----------------
-
-        for symbol in symbols:
-            for interval in intervals:
-
-                engine = Engine(symbol, interval, db)
-
+                engine = Engine(symbol, interval)
                 ENGINES[(symbol, interval)] = engine
-
                 await preload_current(client, engine)
 
-        # ---------------- TELEGRAM START ----------------
-
         await TG_CLIENT.send(
-            "🟢 <b>EngulfingTrend Bot v6.2.0 STARTED</b>\n\n"
+            "🟢 <b>EngulfingTrend Bot v7.0.0 STARTED</b>\n\n"
             "Market: Twelve Data\n"
             f"Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
             f"Timeframes: {', '.join(CONFIG['INTERVALS'])}\n"
-            f"Commission: {CONFIG['COMM_RATE']}\n"
-            f"Historical DB: {CONFIG['HISTORY_MONTHS']} months\n"
+            f"Logika: 2 swing high → BUY, 2 swing low → SELL "
+            f"(faqat mos engulfing bilan)\n"
+            f"Tarix filtri: YO'Q (o'chirilgan)\n"
+            f"Commission: {CONFIG['COMM_RATE']} | Spread: {CONFIG['SPREAD_PCT']}\n"
+            f"Max signals/symbol: {CONFIG['MAX_SIGNALS_PER_SYMBOL']} "
+            f"(qarama-qarshi yo'nalish bloklanadi)\n"
             f"Stale reconnect: {CONFIG['STREAM_STALE_SEC']}s"
         )
-
-        # ---------------- RUN ----------------
 
         tasks = [
             asyncio.create_task(market_stream(client)),
@@ -2368,23 +1829,14 @@ async def main():
         await asyncio.gather(*tasks)
 
     finally:
-
         await client.close()
-
         log.info("Bot stopped.")
 
 
-# ============================================================
-# START
-# ============================================================
-
 if __name__ == "__main__":
-
     try:
         asyncio.run(main())
-
     except KeyboardInterrupt:
         log.info("Stopped by user.")
-
     except Exception as e:
         log.exception("FATAL ERROR: %s", e)
