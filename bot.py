@@ -1,16 +1,15 @@
-# EngulfingTrend Bot v7.3.0
+# EngulfingTrend Bot v7.5.0
 # MARKET DATA: Twelve Data (REST API polling - Free tarif uchun)
 #
-# v7.2.0 -> v7.3.0:
-#   + INSIDE BAR BREAKOUT strategiyasi qo'shildi (3-sham proboy).
+# v7.4.0 -> v7.5.0:
+#   PINBAR_ADV olib tashlandi.
+#   Uning o'rniga CASCADE BREAKOUT qo'shildi (ketma-ket proboy).
 #
-# v7.1.0 -> v7.2.0:
-#   WebSocket olib tashlandi, REST API polling ishlatiladi.
-#
-# Signal ustuvorligi:
+# Signal ustuvorligi (4 ta):
 #   1) SWING       : 2 swing high/low + 1→2 engulfing
 #   2) BREAKOUT    : Flat zona + impuls engulfing
-#   3) INSIDE_BAR  : Ona bar + inside bar + yo'nalishli proboy
+#   3) INSIDE_BAR  : Ona bar + inside bar + bir xil rangli proboy
+#   4) CASCADE     : c2 c1 ni yorib o'tadi + c3 c2 ni yorib o'tadi
 
 import os
 import io
@@ -430,13 +429,6 @@ def detect_engulfing(candles, idx):
 # ============================================================
 # 2) INSIDE BAR BREAKOUT (Ichki bar + Yo'nalishli proboy)
 # ============================================================
-#
-# 1-sham (Ona bar): katta impulsli sham
-# 2-sham (Inside bar): to'liq 1-shamning HIGH-LOW ichida
-# 3-sham (Proboy): 1-shamning chegarasini yorib o'tadi
-#
-# SELL: 1,2,3 hammasi qizil + 3-sham LOW < 1-sham LOW
-# BUY : 1,2,3 hammasi yashil + 3-sham HIGH > 1-sham HIGH
 
 def detect_inside_bar_breakout(candles, idx):
     if idx < 2:
@@ -453,7 +445,6 @@ def detect_inside_bar_breakout(candles, idx):
     o3, h3, l3, cl3 = (float(c3["open"]), float(c3["high"]),
                        float(c3["low"]),  float(c3["close"]))
 
-    # 1) 2-sham 1-shamning ichida bo'lishi shart
     is_inside = (h2 <= h1) and (l2 >= l1)
     if not is_inside:
         return None
@@ -466,13 +457,66 @@ def detect_inside_bar_breakout(candles, idx):
     c2_bull = cl2 > o2
     c3_bull = cl3 > o3
 
-    # 2) SELL
     if c1_bear and c2_bear and c3_bear and (l3 < l1):
         if body_ratio(c3) >= CONFIG["MIN_BODY_RATIO"]:
             return "SELL"
 
-    # 3) BUY
     if c1_bull and c2_bull and c3_bull and (h3 > h1):
+        if body_ratio(c3) >= CONFIG["MIN_BODY_RATIO"]:
+            return "BUY"
+
+    return None
+
+
+# ============================================================
+# 3) CASCADE BREAKOUT (Ketma-ket proboy)
+# ============================================================
+#
+# Rasmga mos pattern:
+#   c1: orientir
+#   c2: c1 ning LOW/HIGH ini yorib o'tadi
+#   c3: c2 ning LOW/HIGH ini yana yorib o'tadi
+#
+# SELL:
+#   c2 qizil + c2.low < c1.low
+#   c3 qizil + c3.low < c2.low
+#
+# BUY:
+#   c2 yashil + c2.high > c1.high
+#   c3 yashil + c3.high > c2.high
+
+def detect_cascade_breakout(candles, idx):
+    if idx < 2:
+        return None
+
+    c1 = candles[idx - 2]
+    c2 = candles[idx - 1]
+    c3 = candles[idx]
+
+    o1, h1, l1, cl1 = (float(c1["open"]), float(c1["high"]),
+                       float(c1["low"]),  float(c1["close"]))
+    o2, h2, l2, cl2 = (float(c2["open"]), float(c2["high"]),
+                       float(c2["low"]),  float(c2["close"]))
+    o3, h3, l3, cl3 = (float(c3["open"]), float(c3["high"]),
+                       float(c3["low"]),  float(c3["close"]))
+
+    # --- SELL ---
+    if (
+        cl2 < o2
+        and l2 < l1
+        and cl3 < o3
+        and l3 < l2
+    ):
+        if body_ratio(c3) >= CONFIG["MIN_BODY_RATIO"]:
+            return "SELL"
+
+    # --- BUY ---
+    if (
+        cl2 > o2
+        and h2 > h1
+        and cl3 > o3
+        and h3 > h2
+    ):
         if body_ratio(c3) >= CONFIG["MIN_BODY_RATIO"]:
             return "BUY"
 
@@ -606,10 +650,11 @@ class SwingTracker:
 
     def check_signal(self, candles, idx):
         """
-        Ustuvorlik:
-          1) SWING  (2 swing + engulfing)
-          2) BREAKOUT (flat + engulfing)
-          3) INSIDE_BAR (ona bar + inside + proboy)
+        Ustuvorlik (4 ta):
+          1) SWING       (2 swing + engulfing)
+          2) BREAKOUT    (flat + engulfing)
+          3) INSIDE_BAR  (ona bar + inside + bir xil rang proboy)
+          4) CASCADE     (ketma-ket proboy)
         """
         # 1) SWING + engulfing
         eng = detect_engulfing(candles, idx)
@@ -634,6 +679,11 @@ class SwingTracker:
         ib_sig = detect_inside_bar_breakout(candles, idx)
         if ib_sig is not None:
             return ib_sig, "INSIDE_BAR"
+
+        # 4) Cascade Breakout (ketma-ket proboy)
+        cb_sig = detect_cascade_breakout(candles, idx)
+        if cb_sig is not None:
+            return cb_sig, "CASCADE"
 
         return None, None
 
@@ -747,10 +797,6 @@ def comm_cost(lot, price):
 
 def build_swing_info(meta, candles, swings):
     """meta asosida swing_info dict shakllantiradi."""
-    if meta == "SWING":
-        if candles:
-            pass
-        return None  # chaqiruvchi tomondan to'ldiriladi
     if isinstance(meta, tuple) and meta[0] == "BREAKOUT":
         bi = meta[1] or {}
         return {
@@ -767,6 +813,15 @@ def build_swing_info(meta, candles, swings):
                 "last": float(c1["high"]),
             }
         return {"type": "INSIDE_BAR", "prev": 0.0, "last": 0.0}
+    if meta == "CASCADE":
+        if len(candles) >= 3:
+            c1 = candles[-3]
+            return {
+                "type": "CASCADE",
+                "prev": float(c1["low"]),
+                "last": float(c1["high"]),
+            }
+        return {"type": "CASCADE", "prev": 0.0, "last": 0.0}
     return {}
 
 
@@ -946,7 +1001,12 @@ class Engine:
 
         if si:
             st = si.get('type', '')
-            if st == "INSIDE_BAR":
+            if st == "CASCADE":
+                txt += (
+                    f"\n📐 Struktura: <b>CASCADE</b> "
+                    f"(ketma-ket proboy {si.get('prev', 0):.4f}–{si.get('last', 0):.4f})"
+                )
+            elif st == "INSIDE_BAR":
                 txt += (
                     f"\n📐 Struktura: <b>INSIDE_BAR</b> "
                     f"(ona bar {si.get('prev', 0):.4f}–{si.get('last', 0):.4f})"
@@ -1176,7 +1236,13 @@ class Engine:
         si_txt = ""
         if swing_info:
             st = swing_info.get("type", "")
-            if st == "INSIDE_BAR":
+            if st == "CASCADE":
+                si_txt = (
+                    f"📐 Struktura: <b>CASCADE</b>\n"
+                    f"Ketma-ket proboy: {swing_info.get('prev', 0):.4f} – "
+                    f"{swing_info.get('last', 0):.4f}\n"
+                )
+            elif st == "INSIDE_BAR":
                 si_txt = (
                     f"📐 Struktura: <b>INSIDE_BAR</b>\n"
                     f"Ona bar: {swing_info.get('prev', 0):.4f} – "
@@ -1318,11 +1384,13 @@ class Engine:
 
         bo_sig, _ = self.swings._check_breakout_engulfing(test_candles, idx)
         ib_sig = detect_inside_bar_breakout(test_candles, idx)
+        cb_sig = detect_cascade_breakout(test_candles, idx)
 
-        if not classic_ok and bo_sig is None and ib_sig is None:
+        if (not classic_ok and bo_sig is None
+                and ib_sig is None and cb_sig is None):
             return
 
-        key = eng or bo_sig or ib_sig
+        key = eng or bo_sig or ib_sig or cb_sig
         if key is None:
             return
 
@@ -1674,7 +1742,7 @@ async def main():
         log.warning("TELEGRAM_CHAT_ID is missing")
 
     log.info("=" * 50)
-    log.info("EngulfingTrend Bot v7.3.0 (REST API polling + 3 strategiya)")
+    log.info("EngulfingTrend Bot v7.5.0 (REST + 4 strategiya)")
     log.info("Symbols: %s", CONFIG["SYMBOLS"])
     log.info("Intervals: %s", CONFIG["INTERVALS"])
     log.info("Poll interval: %ds | Rate: %d rpm",
@@ -1697,16 +1765,17 @@ async def main():
                 await preload_current(client, engine)
 
         await TG_CLIENT.send(
-            "🟢 <b>EngulfingTrend Bot v7.3.0 STARTED</b>\n\n"
+            "🟢 <b>EngulfingTrend Bot v7.5.0 STARTED</b>\n\n"
             "Market: Twelve Data (<b>REST API polling</b>)\n"
             f"Poll interval: {CONFIG['POLL_INTERVAL_SEC']}s\n"
             f"Rate limit: {CONFIG['TD_REQ_PER_MIN']} req/min\n"
             f"Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
             f"Timeframes: {', '.join(CONFIG['INTERVALS'])}\n\n"
-            f"🎯 <b>Strategiyalar (ustuvorlik):</b>\n"
-            f"1) SWING: 2 swing high/low + 1→2 engulfing\n"
-            f"2) BREAKOUT: Flat zona + impuls engulfing\n"
-            f"3) INSIDE_BAR: Ona bar + inside bar + proboy\n\n"
+            f"🎯 <b>4 strategiya (ustuvorlik):</b>\n"
+            f"1) SWING: 2 swing + 1→2 engulfing\n"
+            f"2) BREAKOUT: Flat + impuls engulfing\n"
+            f"3) INSIDE_BAR: Ona bar + inside + bir xil rang proboy\n"
+            f"4) CASCADE: c2 c1 ni yorib o'tadi + c3 c2 ni yorib o'tadi\n\n"
             f"Commission: {CONFIG['COMM_RATE']} | Spread: {CONFIG['SPREAD_PCT']}\n"
             f"Max signals/symbol: {CONFIG['MAX_SIGNALS_PER_SYMBOL']}"
         )
