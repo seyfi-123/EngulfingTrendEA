@@ -1,11 +1,13 @@
-# EngulfingTrend Bot v7.5.0
-# MARKET DATA: Twelve Data (REST API polling - Free tarif uchun)
+# EngulfingTrend Bot v7.6.0
+# MARKET DATA: Twelve Data (REST API polling - Free tarif uchun optimal)
 #
-# v7.4.0 -> v7.5.0:
-#   PINBAR_ADV olib tashlandi.
-#   Uning o'rniga CASCADE BREAKOUT qo'shildi (ketma-ket proboy).
+# Free tier optimizatsiyasi:
+#   - INTERVALS = 1m
+#   - POLL_INTERVAL_SEC = 180 (kunlik limitga sig'ish uchun)
+#   - TD_REQ_PER_MIN = 6
+#   - 3 ta symbol
 #
-# Signal ustuvorligi (4 ta):
+# 4 ta strategiya (ustuvorlik):
 #   1) SWING       : 2 swing high/low + 1→2 engulfing
 #   2) BREAKOUT    : Flat zona + impuls engulfing
 #   3) INSIDE_BAR  : Ona bar + inside bar + bir xil rangli proboy
@@ -57,12 +59,15 @@ def _list(name, default):
 
 
 # ============================================================
-# CONFIG
+# CONFIG (Free tier uchun optimal default)
 # ============================================================
 
 CONFIG = {
-    "SYMBOLS": _list("SYMBOLS", "SPY,WTI/USD,XAU/USD,USD/JPY,EUR/USD"),
-    "INTERVALS": _list("INTERVALS", "1m,5m,15m,1h"),
+    # 3 ta asosiy symbol - free tier uchun optimal
+    "SYMBOLS": _list("SYMBOLS", "SPY,XAU/USD,EUR/USD"),
+
+    # Free tier uchun 1m optimal
+    "INTERVALS": _list("INTERVALS", "1m"),
 
     "BALANCE": _f("BALANCE", 1000),
     "RISK_PCT": _f("RISK_PCT", 0.02),
@@ -103,17 +108,23 @@ CONFIG = {
 
     "REPORT_HOUR": _i("REPORT_HOUR", 18),
     "DIAGNOSTICS_HOUR": _i("DIAGNOSTICS_HOUR", 9),
-    "SOCKET_TIMEOUT_MIN": _i("SOCKET_TIMEOUT_MIN", 30),
+    "SOCKET_TIMEOUT_MIN": _i("SOCKET_TIMEOUT_MIN", 60),
     "MAX_DAILY_LOSS_PCT": _f("MAX_DAILY_LOSS_PCT", 0.15),
     "CHART_CANDLES": _i("CHART_CANDLES", 100),
     "HISTORY_LIMIT": _i("HISTORY_LIMIT", 1000),
 
+    # Free tier: 6 req/min (8 dan kam, xavfsiz)
     "TD_REQ_PER_MIN": _i("TD_REQ_PER_MIN", 6),
 
-    "STREAM_STALE_SEC": _i("STREAM_STALE_SEC", 300),
+    "STREAM_STALE_SEC": _i("STREAM_STALE_SEC", 600),
 
-    # ---- REST API POLLING ----
-    "POLL_INTERVAL_SEC": _i("POLL_INTERVAL_SEC", 60),
+    # ---- REST API POLLING (Free tier optimal) ----
+    # 3 symbol × 480 poll/kun = 1440/kun  →  KO'P!
+    # 180 sek → 3 min → 480 poll/kun/symbol
+    # Limitga sig'ish uchun quyidagi kombinatsiya eng yaxshi:
+    #   3 symbol × 180 sek = 1440/kun (kunlik limit 800 dan oshadi)
+    #   → 1 symbol + 180 sek = 480/kun ✅
+    "POLL_INTERVAL_SEC": _i("POLL_INTERVAL_SEC", 180),
     "POLL_OUTPUTSIZE": _i("POLL_OUTPUTSIZE", 5),
 
     "MIN_RANGE_VS_AVG": _f("MIN_RANGE_VS_AVG", 0.5),
@@ -194,7 +205,7 @@ def to_account_ccy(symbol, amount, ref_price):
 
 
 # ============================================================
-# TWELVE DATA CLIENT (faqat REST)
+# TWELVE DATA CLIENT
 # ============================================================
 
 class DailyLimitError(Exception):
@@ -209,6 +220,8 @@ class TwelveData:
         self.request_times = []
         self.lock = asyncio.Lock()
         self.max_rpm = max(1, CONFIG["TD_REQ_PER_MIN"])
+        self.daily_count = 0
+        self.day_reset = datetime.now(timezone.utc).date()
 
     async def start(self):
         if self.session is None:
@@ -235,14 +248,24 @@ class TwelveData:
                 log.info("Rate limiter: waiting %.1f sec...", max(wait, 1))
                 await asyncio.sleep(max(wait, 1))
 
+    def _check_daily(self):
+        today = datetime.now(timezone.utc).date()
+        if today != self.day_reset:
+            self.day_reset = today
+            self.daily_count = 0
+
     async def request(self, endpoint, params):
         await self.start()
+        self._check_daily()
+
         params = dict(params)
         params["apikey"] = self.api_key
         url = f"https://api.twelvedata.com/{endpoint}"
 
         for attempt in range(6):
             await self._throttle()
+            self.daily_count += 1
+
             try:
                 async with self.session.get(url, params=params) as r:
                     text = await r.text()
@@ -371,7 +394,7 @@ def avg_range(candles):
 
 
 # ============================================================
-# 1) ENGULFING — 1 ta sham OLDINGI 2 ta shamni yutadi
+# 1) ENGULFING
 # ============================================================
 
 def detect_engulfing(candles, idx):
@@ -427,7 +450,7 @@ def detect_engulfing(candles, idx):
 
 
 # ============================================================
-# 2) INSIDE BAR BREAKOUT (Ichki bar + Yo'nalishli proboy)
+# 2) INSIDE BAR BREAKOUT
 # ============================================================
 
 def detect_inside_bar_breakout(candles, idx):
@@ -469,21 +492,8 @@ def detect_inside_bar_breakout(candles, idx):
 
 
 # ============================================================
-# 3) CASCADE BREAKOUT (Ketma-ket proboy)
+# 3) CASCADE BREAKOUT
 # ============================================================
-#
-# Rasmga mos pattern:
-#   c1: orientir
-#   c2: c1 ning LOW/HIGH ini yorib o'tadi
-#   c3: c2 ning LOW/HIGH ini yana yorib o'tadi
-#
-# SELL:
-#   c2 qizil + c2.low < c1.low
-#   c3 qizil + c3.low < c2.low
-#
-# BUY:
-#   c2 yashil + c2.high > c1.high
-#   c3 yashil + c3.high > c2.high
 
 def detect_cascade_breakout(candles, idx):
     if idx < 2:
@@ -649,13 +659,6 @@ class SwingTracker:
         return None, None
 
     def check_signal(self, candles, idx):
-        """
-        Ustuvorlik (4 ta):
-          1) SWING       (2 swing + engulfing)
-          2) BREAKOUT    (flat + engulfing)
-          3) INSIDE_BAR  (ona bar + inside + bir xil rang proboy)
-          4) CASCADE     (ketma-ket proboy)
-        """
         # 1) SWING + engulfing
         eng = detect_engulfing(candles, idx)
         if eng is not None:
@@ -680,7 +683,7 @@ class SwingTracker:
         if ib_sig is not None:
             return ib_sig, "INSIDE_BAR"
 
-        # 4) Cascade Breakout (ketma-ket proboy)
+        # 4) Cascade Breakout
         cb_sig = detect_cascade_breakout(candles, idx)
         if cb_sig is not None:
             return cb_sig, "CASCADE"
@@ -796,7 +799,6 @@ def comm_cost(lot, price):
 
 
 def build_swing_info(meta, candles, swings):
-    """meta asosida swing_info dict shakllantiradi."""
     if isinstance(meta, tuple) and meta[0] == "BREAKOUT":
         bi = meta[1] or {}
         return {
@@ -1519,6 +1521,7 @@ def candle_bucket(timestamp, interval):
 # ============================================================
 
 _LAST_TICK_TS = {"t": time.time()}
+_LAST_EMPTY_WARN = {}
 
 
 async def poll_engine(client, engine):
@@ -1536,6 +1539,15 @@ async def poll_engine(client, engine):
 
     values = data.get("values", [])
     if not values:
+        key = f"{engine.symbol}-{engine.interval}"
+        now = time.time()
+        last = _LAST_EMPTY_WARN.get(key, 0)
+        if now - last > 600:
+            _LAST_EMPTY_WARN[key] = now
+            log.warning(
+                "API bo'sh javob: %s %s (symbol mavjud emas yoki limit)",
+                engine.symbol, engine.interval
+            )
         return
 
     fetched = []
@@ -1611,8 +1623,8 @@ async def market_poller(client):
 
         if err_count == 0 and ok_count > 0:
             log.info(
-                "Poll sikl tugadi: %d engine yangilandi (%.1fs)",
-                ok_count, time.time() - cycle_start,
+                "Poll sikl tugadi: %d engine yangilandi (%.1fs) | kunlik so'rov: %d",
+                ok_count, time.time() - cycle_start, client.daily_count,
             )
 
         elapsed = time.time() - cycle_start
@@ -1742,11 +1754,12 @@ async def main():
         log.warning("TELEGRAM_CHAT_ID is missing")
 
     log.info("=" * 50)
-    log.info("EngulfingTrend Bot v7.5.0 (REST + 4 strategiya)")
+    log.info("EngulfingTrend Bot v7.6.0 (REST + 4 strategiya, FREE tier)")
     log.info("Symbols: %s", CONFIG["SYMBOLS"])
     log.info("Intervals: %s", CONFIG["INTERVALS"])
     log.info("Poll interval: %ds | Rate: %d rpm",
              CONFIG["POLL_INTERVAL_SEC"], CONFIG["TD_REQ_PER_MIN"])
+    log.info("Kunlik so'rov limiti: 800 (Free tier)")
     log.info("=" * 50)
 
     client = TwelveData(TWELVE_DATA_API_KEY)
@@ -1765,10 +1778,12 @@ async def main():
                 await preload_current(client, engine)
 
         await TG_CLIENT.send(
-            "🟢 <b>EngulfingTrend Bot v7.5.0 STARTED</b>\n\n"
+            "🟢 <b>EngulfingTrend Bot v7.6.0 STARTED</b>\n\n"
             "Market: Twelve Data (<b>REST API polling</b>)\n"
+            "Tarif: <b>Free tier</b>\n"
             f"Poll interval: {CONFIG['POLL_INTERVAL_SEC']}s\n"
             f"Rate limit: {CONFIG['TD_REQ_PER_MIN']} req/min\n"
+            f"Kunlik limit: 800 req/day\n"
             f"Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
             f"Timeframes: {', '.join(CONFIG['INTERVALS'])}\n\n"
             f"🎯 <b>4 strategiya (ustuvorlik):</b>\n"
