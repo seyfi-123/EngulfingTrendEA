@@ -1,19 +1,14 @@
-# EngulfingTrend Bot v7.1.0
-# MARKET DATA: Twelve Data
+# EngulfingTrend Bot v7.2.0
+# MARKET DATA: Twelve Data (REST API polling - Free tarif uchun)
+#
+# v7.1.0 -> v7.2.0:
+#   WebSocket (wss://ws.twelvedata.com) olib tashlandi.
+#   Endi Twelve Data REST API (time_series) orqali har POLL_INTERVAL_SEC
+#   da yangi shamlar olinadi. Bu bepul tarifda ham ishlaydi.
 #
 # v7.0.0 -> v7.1.0:
-#   1) ENGULFING QOIDASI KUCHAYTIRILDI:
-#      Endi signal FAQAT 1 ta sham OLDINGI 2 ta shamni to'liq
-#      yutib yuborganda paydo bo'ladi (2 ta shamning HIGH-LOW
-#      diapazonini qoplashi shart, va ikkalasi ham teskarisi
-#      yo'nalishda bo'lishi shart).
-#   2) FLAT + BREAKOUT ENGULFING qo'shildi:
-#      Bozor bir joyda to'planib turgan paytda kuchli tana
-#      diapazonni yorib chiqsa -> BUY/SELL.
-#
-#   BUY:  2 swing high (2-chisi balandroq) + bullish engulfing (1→2)
-#   SELL: 2 swing low  (2-chisi pastroq)  + bearish engulfing (1→2)
-#   BUY/SELL: Flat zona + breakout impuls engulfing (1→2)
+#   1) ENGULFING QOIDASI KUCHAYTIRILDI (1→2 engulfing).
+#   2) FLAT + BREAKOUT ENGULFING qo'shildi.
 
 import os
 import io
@@ -26,7 +21,6 @@ import logging
 from datetime import datetime, timezone
 
 import aiohttp
-import websockets
 import pandas as pd
 
 import matplotlib
@@ -84,12 +78,11 @@ CONFIG = {
     "SWING_LOOKBACK": _i("SWING_LOOKBACK", 2),
     "SWING_MAX_AGE_CANDLES": _i("SWING_MAX_AGE_CANDLES", 30),
 
-    # ---- FLAT / BREAKOUT ENGULFING (yumshatilgan qoida) ----
+    # ---- FLAT / BREAKOUT ENGULFING ----
     "FLAT_LOOKBACK": _i("FLAT_LOOKBACK", 4),
     "FLAT_MAX_RANGE_VS_AVG": _f("FLAT_MAX_RANGE_VS_AVG", 2.5),
     "BREAKOUT_MIN_BODY_RATIO": _f("BREAKOUT_MIN_BODY_RATIO", 0.55),
 
-    # SL buferi: signal shamining range'iga nisbatan foiz
     "SL_BUF_FRAC": _f("SL_BUF_FRAC", 0.05),
 
     "SPREAD_PCT": _f("SPREAD_PCT", 0.0002),
@@ -116,7 +109,11 @@ CONFIG = {
 
     "TD_REQ_PER_MIN": _i("TD_REQ_PER_MIN", 6),
 
-    "STREAM_STALE_SEC": _i("STREAM_STALE_SEC", 90),
+    "STREAM_STALE_SEC": _i("STREAM_STALE_SEC", 300),
+
+    # ---- REST API POLLING (WebSocket o'rniga) ----
+    "POLL_INTERVAL_SEC": _i("POLL_INTERVAL_SEC", 60),
+    "POLL_OUTPUTSIZE": _i("POLL_OUTPUTSIZE", 5),
 
     "MIN_RANGE_VS_AVG": _f("MIN_RANGE_VS_AVG", 0.5),
     "MIN_BODY_RATIO": _f("MIN_BODY_RATIO", 0.3),
@@ -134,7 +131,6 @@ logging.basicConfig(
     force=True,
 )
 
-logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 log = logging.getLogger("EngulfingTrend")
@@ -197,7 +193,7 @@ def to_account_ccy(symbol, amount, ref_price):
 
 
 # ============================================================
-# TWELVE DATA CLIENT
+# TWELVE DATA CLIENT (faqat REST)
 # ============================================================
 
 class DailyLimitError(Exception):
@@ -309,29 +305,6 @@ class TwelveData:
         }
         return await self.request("time_series", params)
 
-    async def price_stream(self, symbols):
-        if not symbols:
-            return
-        url = f"wss://ws.twelvedata.com/v1/quotes/price?apikey={self.api_key}"
-        async with websockets.connect(
-            url,
-            ping_interval=20,
-            ping_timeout=20,
-            close_timeout=10,
-            max_size=2**20,
-        ) as ws:
-            subscribe_symbols = ",".join(normalize_symbol(x) for x in symbols)
-            await ws.send(json.dumps({
-                "action": "subscribe",
-                "params": {"symbols": subscribe_symbols},
-            }))
-            log.info(
-                "Twelve Data WebSocket subscribe so'rovi yuborildi: %s",
-                subscribe_symbols
-            )
-            async for raw in ws:
-                yield raw
-
 
 # ============================================================
 # TELEGRAM
@@ -401,22 +374,6 @@ def avg_range(candles):
 # ============================================================
 
 def detect_engulfing(candles, idx):
-    """
-    QAT'IY QOIDA: 1 ta sham OLDINGI 2 ta shamni TO'LIQ yutib yuborishi
-    kerak. Ikkala oldingi sham ham teskarisi yo'nalishda bo'lishi shart.
-
-    BULLISH (BUY):
-      - prev1 va prev2 ikkalasi ham bearish (qizil).
-      - Joriy sham bullish (yashil).
-      - Joriy shamning tana ochilishi oldingi 2 shamning eng pastidan
-        pastda yoki teng, va yopilishi eng balandidan yuqori yoki teng.
-
-    BEARISH (SELL):
-      - prev1 va prev2 ikkalasi ham bullish (yashil).
-      - Joriy sham bearish (qizil).
-      - Joriy sham ochilishi oldingi 2 shamning eng balandidan
-        yuqori yoki teng, yopilishi eng pastidan past yoki teng.
-    """
     if idx < 2:
         return None
 
@@ -428,7 +385,6 @@ def detect_engulfing(candles, idx):
     o2, c2 = float(prev2["open"]), float(prev2["close"])
     co, cc = float(cur["open"]),  float(cur["close"])
 
-    # Oldingi 2 shamning eng katta HIGH va eng kichik LOW
     prev_high = max(
         o1, c1, o2, c2,
         float(prev1["high"]), float(prev2["high"])
@@ -446,18 +402,14 @@ def detect_engulfing(candles, idx):
 
     signal = None
 
-    # BULLISH: 1 sham 2 qizil shamni yuqoriga yutadi
     if both_bearish and is_cur_bull and co <= prev_low and cc >= prev_high:
         signal = "BUY"
-
-    # BEARISH: 1 sham 2 yashil shamni pastga yutadi
     elif both_bullish and is_cur_bear and co >= prev_high and cc <= prev_low:
         signal = "SELL"
 
     if signal is None:
         return None
 
-    # ---- minimal ahamiyat filtrlari ----
     lookback = 10
     start = max(0, idx - lookback)
     context = candles[start:idx]
@@ -552,12 +504,6 @@ class SwingTracker:
         return True, l_last[0]
 
     def _check_breakout_engulfing(self, candles, idx):
-        """
-        FLAT + IMPULSE ENGULFING:
-        - Oldingi FLAT_LOOKBACK ta sham tor diapazonda to'plangan.
-        - Joriy sham katta tanali engulfing (1 → 2).
-        - Tana diapazonni yorib chiqqan.
-        """
         lb = CONFIG["FLAT_LOOKBACK"]
         if idx < max(lb, 2) + 1:
             return None, None
@@ -605,14 +551,8 @@ class SwingTracker:
         return None, None
 
     def check_signal(self, candles, idx):
-        """
-        Qaytaradi: (signal, meta)
-          signal: "BUY" | "SELL" | None
-          meta  : "SWING" | ("BREAKOUT", dict) | None
-        """
         eng = detect_engulfing(candles, idx)
 
-        # ---------- 1) Klassik swing + engulfing (1→2) ----------
         if eng is not None:
             if eng == "BUY":
                 ready, swing_idx = self.buy_structure_ready(idx)
@@ -625,7 +565,6 @@ class SwingTracker:
                     self.last_sell_swing_idx = swing_idx
                     return "SELL", "SWING"
 
-        # ---------- 2) Flat + breakout impuls engulfing ----------
         bo_sig, bo_info = self._check_breakout_engulfing(candles, idx)
         if bo_sig is not None:
             return bo_sig, ("BREAKOUT", bo_info)
@@ -1402,7 +1341,7 @@ async def preload_current(client, engine):
 
 
 # ============================================================
-# LIVE CANDLE BUILDER
+# LIVE CANDLE BUILDER (REST polling uchun)
 # ============================================================
 
 LIVE_CANDLES = {}
@@ -1415,171 +1354,122 @@ def candle_bucket(timestamp, interval):
     return datetime.fromtimestamp(bucket, tz=timezone.utc)
 
 
-async def process_price_tick(symbol, price, timestamp=None):
-    symbol = normalize_symbol(symbol)
-
-    if timestamp is None:
-        timestamp = datetime.now(timezone.utc)
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-
-    price = float(price)
-
-    for key, engine in list(ENGINES.items()):
-        if engine.symbol != symbol:
-            continue
-
-        interval = engine.interval
-        bucket = candle_bucket(timestamp, interval)
-        live_key = (symbol, interval)
-
-        current = LIVE_CANDLES.get(live_key)
-
-        if current is None:
-            current = {
-                "timestamp": bucket, "open": price, "high": price,
-                "low": price, "close": price, "closed": False,
-            }
-            LIVE_CANDLES[live_key] = current
-            await engine.handle_realtime(current)
-            continue
-
-        if current["timestamp"] == bucket:
-            current["high"] = max(current["high"], price)
-            current["low"] = min(current["low"], price)
-            current["close"] = price
-            await engine.handle_realtime(current)
-            continue
-
-        previous = dict(current)
-        previous["closed"] = True
-        await engine.handle_closed(previous)
-
-        new_candle = {
-            "timestamp": bucket, "open": price, "high": price,
-            "low": price, "close": price, "closed": False,
-        }
-        LIVE_CANDLES[live_key] = new_candle
-        await engine.handle_realtime(new_candle)
-
-
 # ============================================================
-# PRICE WEBSOCKET
+# REST API POLLER (WebSocket o'rniga)
 # ============================================================
 
-RECONNECT_EVENT = asyncio.Event()
-_ALERT_SENT = False
 _LAST_TICK_TS = {"t": time.time()}
 
 
-async def market_stream(client):
-    global _ALERT_SENT
+async def poll_engine(client, engine):
+    """
+    Bitta engine uchun Twelve Data REST API'dan oxirgi shamchalarni oladi.
+    - Yangi yopilgan shamlar -> engine.handle_closed()
+    - Hozir shakllanayotgan sham -> engine.handle_realtime()
+    """
+    try:
+        data = await client.time_series(
+            symbol=engine.symbol,
+            interval=engine.interval,
+            outputsize=CONFIG["POLL_OUTPUTSIZE"],
+        )
+    except DailyLimitError:
+        raise
+    except Exception as e:
+        log.error("Poll xato %s %s: %s", engine.symbol, engine.interval, e)
+        return
 
-    symbols = [normalize_symbol(x) for x in CONFIG["SYMBOLS"]]
-    reconnect_delay = 3
+    values = data.get("values", [])
+    if not values:
+        return
+
+    fetched = []
+    for row in values:
+        try:
+            dt = pd.to_datetime(row["datetime"], utc=True)
+            fetched.append({
+                "timestamp": dt.to_pydatetime(),
+                "open":  float(row["open"]),
+                "high":  float(row["high"]),
+                "low":   float(row["low"]),
+                "close": float(row["close"]),
+                "closed": False,
+            })
+        except Exception:
+            continue
+
+    if not fetched:
+        return
+
+    fetched.sort(key=lambda x: x["timestamp"])
+
+    now = datetime.now(timezone.utc)
+    current_bucket = candle_bucket(now, engine.interval)
+
+    for c in fetched:
+        c["closed"] = (c["timestamp"] != current_bucket)
+
+    last_engine_ts = engine.candles[-1]["timestamp"] if engine.candles else None
+
+    # 1) Yangi yopilgan shamlar
+    for c in fetched:
+        if not c["closed"]:
+            continue
+        if last_engine_ts is None or c["timestamp"] > last_engine_ts:
+            await engine.handle_closed(c)
+            last_engine_ts = c["timestamp"]
+
+    # 2) Hozir shakllanayotgan sham (realtime confirmation uchun)
+    forming = fetched[-1]
+    if not forming["closed"]:
+        await engine.handle_realtime(forming)
+
+
+async def market_poller(client):
+    """
+    WebSocket o'rniga REST API orqali har POLL_INTERVAL_SEC da
+    barcha engine'larni navbat bilan so'raydi.
+    Rate limiter (TD_REQ_PER_MIN) avtomatik cheklaydi.
+    """
+    log.info(
+        "Market data rejimi: REST API polling (har ~%d sek, rate=%d rpm)",
+        CONFIG["POLL_INTERVAL_SEC"], CONFIG["TD_REQ_PER_MIN"],
+    )
+    _LAST_TICK_TS["t"] = time.time()
 
     while True:
-        RECONNECT_EVENT.clear()
-        try:
-            log.info("Twelve Data narx oqimiga ulanmoqda...")
-            stream_gen = client.price_stream(symbols)
-            recv_task = None
+        cycle_start = time.time()
+        ok_count = 0
+        err_count = 0
 
-            async def _next_message():
-                return await stream_gen.__anext__()
-
-            while True:
-                if recv_task is None:
-                    recv_task = asyncio.create_task(_next_message())
-
-                wait_event = asyncio.create_task(RECONNECT_EVENT.wait())
-
-                done, pending = await asyncio.wait(
-                    {recv_task, wait_event},
-                    return_when=asyncio.FIRST_COMPLETED,
+        for key, engine in list(ENGINES.items()):
+            try:
+                await poll_engine(client, engine)
+                ok_count += 1
+            except DailyLimitError as e:
+                log.error("Kunlik limit tugadi: %s", e)
+                await TG_CLIENT.send(
+                    f"⚠️ <b>Twelve Data kunlik limit</b>\n<code>{str(e)[:300]}</code>"
                 )
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                err_count += 1
+                log.error("Poll xato %s %s: %s", engine.symbol, engine.interval, e)
 
-                if wait_event in done:
-                    recv_task.cancel()
-                    for t in pending:
-                        t.cancel()
-                    log.warning("market_stream: majburiy reconnect")
-                    raise ConnectionError("forced_reconnect")
+        if ok_count > 0:
+            _LAST_TICK_TS["t"] = time.time()
 
-                wait_event.cancel()
+        if err_count == 0 and ok_count > 0:
+            log.info(
+                "Poll sikl tugadi: %d engine yangilandi (%.1fs)",
+                ok_count, time.time() - cycle_start,
+            )
 
-                if recv_task in done:
-                    raw = recv_task.result()
-                    recv_task = None
-                    reconnect_delay = 3
-
-                    try:
-                        if isinstance(raw, bytes):
-                            raw = raw.decode("utf-8", errors="ignore")
-
-                        msg = json.loads(raw)
-                        if not isinstance(msg, dict):
-                            continue
-
-                        event = msg.get("event")
-
-                        if event == "subscribe-status":
-                            status = msg.get("status")
-                            fails = msg.get("fails") or []
-                            log.info("TD subscribe-status: status=%s fails=%s", status, fails)
-                            if fails:
-                                await TG_CLIENT.send(
-                                    "⚠️ <b>Twelve Data OBUNA MUVAFFAQIYATSIZ</b>\n"
-                                    f"Fails: {fails}"
-                                )
-                            continue
-
-                        if event == "heartbeat":
-                            continue
-
-                        if event in ("error",) or msg.get("code") not in (None, 200):
-                            log.error("TD stream error: %s", str(msg)[:500])
-                            await TG_CLIENT.send(
-                                f"⚠️ <b>Twelve Data stream xato</b>\n"
-                                f"<code>{str(msg)[:500]}</code>"
-                            )
-                            continue
-
-                        symbol = msg.get("symbol") or msg.get("code")
-                        price = msg.get("price") or msg.get("close") or msg.get("value")
-
-                        if not symbol or price is None:
-                            continue
-
-                        _LAST_TICK_TS["t"] = time.time()
-
-                        if _ALERT_SENT:
-                            _ALERT_SENT = False
-                            await TG_CLIENT.send("✅ <b>Market data oqimi tiklandi</b>")
-
-                        ts_value = msg.get("timestamp") or msg.get("time")
-                        ts = None
-                        if ts_value is not None:
-                            try:
-                                if isinstance(ts_value, (int, float)):
-                                    ts = datetime.fromtimestamp(float(ts_value), tz=timezone.utc)
-                                else:
-                                    ts = pd.to_datetime(ts_value, utc=True).to_pydatetime()
-                            except Exception:
-                                ts = None
-
-                        await process_price_tick(symbol, float(price), ts)
-
-                    except Exception as e:
-                        log.error("Price message error: %s", e)
-
-        except asyncio.CancelledError:
-            raise
-
-        except Exception as e:
-            log.error("Market stream disconnected: %s", e)
-            await asyncio.sleep(reconnect_delay)
-            reconnect_delay = min(reconnect_delay * 2, 60)
+        elapsed = time.time() - cycle_start
+        wait = max(1.0, CONFIG["POLL_INTERVAL_SEC"] - elapsed)
+        await asyncio.sleep(wait)
 
 
 # ============================================================
@@ -1610,6 +1500,9 @@ async def daily_report():
     await TG_CLIENT.send("\n".join(lines))
 
 
+_ALERT_SENT = False
+
+
 async def health_check():
     global _ALERT_SENT
     while True:
@@ -1621,10 +1514,13 @@ async def health_check():
                 _ALERT_SENT = True
                 await TG_CLIENT.send(
                     "⚠️ <b>MARKET DATA JIM</b>\n"
-                    f"{silent / 60:.1f} daqiqadan beri HAQIQIY narx "
-                    f"tick'i yo'q.\n🔄 Socket majburiy qayta ulanmoqda..."
+                    f"{silent / 60:.1f} daqiqadan beri yangi REST javob yo'q.\n"
+                    "🔄 Polling davom etmoqda..."
                 )
-                RECONNECT_EVENT.set()
+
+            if silent < CONFIG["STREAM_STALE_SEC"] and _ALERT_SENT:
+                _ALERT_SENT = False
+                await TG_CLIENT.send("✅ <b>Market data oqimi tiklandi</b>")
 
             for key, engine in ENGINES.items():
                 age = now - engine.last_candle_time
@@ -1698,9 +1594,11 @@ async def main():
         log.warning("TELEGRAM_CHAT_ID is missing")
 
     log.info("=" * 50)
-    log.info("EngulfingTrend Bot v7.1.0 (1→2 engulfing + flat breakout)")
+    log.info("EngulfingTrend Bot v7.2.0 (REST API polling)")
     log.info("Symbols: %s", CONFIG["SYMBOLS"])
     log.info("Intervals: %s", CONFIG["INTERVALS"])
+    log.info("Poll interval: %ds | Rate: %d rpm",
+             CONFIG["POLL_INTERVAL_SEC"], CONFIG["TD_REQ_PER_MIN"])
     log.info("=" * 50)
 
     client = TwelveData(TWELVE_DATA_API_KEY)
@@ -1719,20 +1617,21 @@ async def main():
                 await preload_current(client, engine)
 
         await TG_CLIENT.send(
-            "🟢 <b>EngulfingTrend Bot v7.1.0 STARTED</b>\n\n"
-            "Market: Twelve Data\n"
+            "🟢 <b>EngulfingTrend Bot v7.2.0 STARTED</b>\n\n"
+            "Market: Twelve Data (<b>REST API polling</b>)\n"
+            f"Poll interval: {CONFIG['POLL_INTERVAL_SEC']}s\n"
+            f"Rate limit: {CONFIG['TD_REQ_PER_MIN']} req/min\n"
             f"Symbols: {', '.join(CONFIG['SYMBOLS'])}\n"
             f"Timeframes: {', '.join(CONFIG['INTERVALS'])}\n"
-            f"Engulfing: <b>1 sham OLDINGI 2 tasini yuтади</b>\n"
+            f"Engulfing: <b>1 sham OLDINGI 2 tasini yutadi</b>\n"
             f"Signal 1: 2 swing high → BUY, 2 swing low → SELL\n"
             f"Signal 2: Flat + breakout impuls engulfing\n"
             f"Commission: {CONFIG['COMM_RATE']} | Spread: {CONFIG['SPREAD_PCT']}\n"
-            f"Max signals/symbol: {CONFIG['MAX_SIGNALS_PER_SYMBOL']}\n"
-            f"Stale reconnect: {CONFIG['STREAM_STALE_SEC']}s"
+            f"Max signals/symbol: {CONFIG['MAX_SIGNALS_PER_SYMBOL']}"
         )
 
         tasks = [
-            asyncio.create_task(market_stream(client)),
+            asyncio.create_task(market_poller(client)),
             asyncio.create_task(health_check()),
             asyncio.create_task(diagnostics_loop()),
             asyncio.create_task(report_loop()),
